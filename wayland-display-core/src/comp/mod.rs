@@ -1,5 +1,5 @@
 use super::{Command, GstVideoInfo};
-use gst_video::{VideoInfo};
+use gst_video::VideoInfo;
 use smithay::backend::input::AxisSource;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::{
@@ -493,6 +493,11 @@ pub(crate) fn init(
                         Some(horizontal_amount),
                         Some(vertical_amount),
                     );
+                }
+                Event::Msg(Command::GetSupportedDmaFormats(sender)) => {
+                    let formats = Bind::<Dmabuf>::supported_formats(&state.renderer);
+                    debug!("Supported dma formats: {:?}", formats);
+                    let _ = sender.send(formats);
                 }
                 Event::Msg(Command::TouchDown(id, rel_position)) => {
                     let time: Duration = state.clock.now().into();
