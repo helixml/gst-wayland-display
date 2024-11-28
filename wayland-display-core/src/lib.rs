@@ -31,7 +31,7 @@ pub(crate) enum Command {
     PointerMotionAbsolute(Point<f64, Logical>),
     PointerButton(u32, ButtonState),
     PointerAxis(f64, f64),
-    GetSupportedDmaFormats(SyncSender<Option<FormatSet>>),
+    GetSupportedDmaFormats(SyncSender<FormatSet>),
     TouchDown(u32, Point<f64, Logical>),
     TouchUp(u32),
     TouchMotion(u32, Point<f64, Logical>),
@@ -233,7 +233,7 @@ impl WaylandDisplay {
         }
     }
 
-    pub fn get_supported_dma_formats(&self) -> Option<FormatSet> {
+    pub fn get_supported_dma_formats(&self) -> FormatSet {
         let (buffer_tx, buffer_rx) = mpsc::sync_channel(0);
         let _ = self
             .command_tx
