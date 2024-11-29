@@ -516,7 +516,7 @@ pub(crate) fn init(
                         }
                         None => FormatSet::default(),
                     };
-                    tracing::info!("Supported dma formats: {:?}", supported_formats);
+                    debug!("Supported dma formats: {:?}", supported_formats);
                     let _ = sender.send(supported_formats);
                 }
                 Event::Msg(Command::TouchDown(id, rel_position)) => {
