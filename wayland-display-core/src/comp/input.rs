@@ -6,13 +6,15 @@ use smithay::{
     backend::{
         input::{
             Axis, AxisSource, ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent,
-            PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+            PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent, TouchSlot,
+            AbsolutePositionEvent,
         },
         libinput::LibinputInputBackend,
     },
     input::{
         keyboard::{keysyms, FilterResult},
         pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
+        touch::{DownEvent, UpEvent, MotionEvent as TouchMotionEvent},
     },
     reexports::{
         input::LibinputInterface,
@@ -286,6 +288,131 @@ impl State {
         pointer.frame(self);
     }
 
+    fn touch_location_transformed<B: smithay::backend::input::InputBackend, E: AbsolutePositionEvent<B>>(
+        &self,
+        evt: &E,
+    ) -> Option<Point<f64, Logical>> {
+        let output = self
+            .space
+            .outputs()
+            .find(|output| output.name().starts_with("eDP"))
+            .or_else(|| self.space.outputs().next())?;
+
+        let output_geometry = self.space.output_geometry(output)?;
+        let transform = output.current_transform();
+        let size = transform.invert().transform_size(output_geometry.size);
+
+        Some(
+            transform.transform_point_in(evt.position_transformed(size), &size.to_f64())
+                + output_geometry.loc.to_f64(),
+        )
+    }
+
+    pub fn relative_touch_to_logical(
+        &mut self,                
+        relative_pos: Point<f64, Logical>,                           // 0.0 to 1.0
+    ) -> Option<Point<f64, Logical>> {
+        let output = self.space
+            .outputs()
+            .find(|output| output.name().starts_with("eDP"))
+            .or_else(|| self.space.outputs().next())?;
+
+        let output_geometry = self.space.output_geometry(output)?;
+        let transform = output.current_transform();
+
+        // Size before transform
+        let untransformed_size = transform.invert().transform_size(output_geometry.size);
+        let size_f64 = untransformed_size.to_f64();
+
+        // Scaled raw position in untransformed space
+        let pos = Point::from((relative_pos.x * size_f64.w, relative_pos.y * size_f64.h));
+
+        // Now apply the output transform
+        let transformed_pos = transform.transform_point_in(pos, &size_f64);
+
+        // Map to global logical coordinates
+        Some(transformed_pos + output_geometry.loc.to_f64())
+    }
+    
+    pub fn touch_down(
+        &mut self,
+        event_time_msec: u32,
+        slot: TouchSlot,
+        location: Point<f64, Logical>,
+    ) {
+        let serial = SERIAL_COUNTER.next_serial();
+        let touch = self.seat.get_touch().unwrap();
+        let under = self
+            .space
+            .element_under(location)
+            .map(|(w, pos)| (w.clone().into(), pos.to_f64()));
+    
+        touch.down(
+            self,
+            under,
+            &DownEvent {
+                slot: slot,
+                location: location,
+                serial,
+                time: event_time_msec,
+            },
+        );
+        touch.frame(self);
+    }
+
+    pub fn touch_up(
+        &mut self,
+        event_time_msec: u32,
+        slot: TouchSlot,
+    ) {
+        let serial = SERIAL_COUNTER.next_serial();
+        let touch = self.seat.get_touch().unwrap();
+    
+        touch.up(
+            self,
+            &UpEvent {
+                slot: slot,
+                serial,
+                time: event_time_msec,
+            },
+        );
+        touch.frame(self);
+    }
+    
+    pub fn touch_motion(
+        &mut self,
+        event_time_msec: u32,
+        slot: TouchSlot,
+        location: Point<f64, Logical>,
+    ) {
+        let touch = self.seat.get_touch().unwrap();
+        let under = self
+            .space
+            .element_under(location)
+            .map(|(w, pos)| (w.clone().into(), pos.to_f64()));
+    
+        touch.motion(
+            self,
+            under,
+            &TouchMotionEvent {
+                slot,
+                location,
+                time: event_time_msec,
+            },
+        );
+        touch.frame(self);
+    }
+
+    pub fn touch_cancel(&mut self) {
+        let touch = self.seat.get_touch().unwrap();
+        touch.cancel(self);
+    }
+    
+    pub fn touch_frame(&mut self) {
+        let touch = self.seat.get_touch().unwrap();
+        touch.frame(self);
+    }
+
     pub fn process_input_event(&mut self, event: InputEvent<LibinputInputBackend>) {
         match event {
             InputEvent::Keyboard { event, .. } => {
@@ -334,6 +461,25 @@ impl State {
                     horizontal_amount_discrete,
                     vertical_amount_discrete,
                 );
+            }
+            InputEvent::TouchDown { event, .. } => {
+                if let Some(location) = self.touch_location_transformed(&event) {
+                    self.touch_down(event.time_msec(), event.slot(), location);
+                }
+            }
+            InputEvent::TouchUp { event, .. } => {
+                self.touch_up(event.time_msec(), event.slot());
+            }
+            InputEvent::TouchMotion { event, .. } => {
+                if let Some(location) = self.touch_location_transformed(&event) {
+                    self.touch_motion(event.time_msec(), event.slot(), location);
+                }
+            }
+            InputEvent::TouchCancel { .. } => {
+                self.touch_cancel();
+            }
+            InputEvent::TouchFrame { .. } => {
+                self.touch_frame();
             }
             _ => {}
         }
