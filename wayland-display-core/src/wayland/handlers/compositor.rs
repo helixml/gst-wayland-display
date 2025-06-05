@@ -9,7 +9,7 @@ use smithay::{
             Client,
         },
     },
-    utils::{Size, SERIAL_COUNTER},
+    utils::{SERIAL_COUNTER},
     wayland::{
         buffer::BufferHandler,
         compositor::{with_states, CompositorClientState, CompositorHandler, CompositorState},
