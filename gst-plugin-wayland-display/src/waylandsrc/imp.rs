@@ -144,6 +144,30 @@ impl EventHandler for WaylandDisplaySrc {
                 ));
 
                 return true;
+            } else if structure.has_name("TouchDown") {
+                let x = structure.get::<f64>("x").expect("Should contain x");
+                let y = structure.get::<f64>("y").expect("Should contain y");
+                let id = structure.get::<u32>("id").expect("Should contain id");
+                let _ = self.command_tx.send(Command::TouchDown(id, (x, y).into()));
+                return true;
+            } else if structure.has_name("TouchUp") {
+                let id = structure.get::<u32>("id").expect("Should contain id");
+                let _ = self.command_tx.send(Command::TouchUp(id));
+                return true;
+            } else if structure.has_name("TouchMotion") {
+                let x = structure.get::<f64>("x").expect("Should contain x");
+                let y = structure.get::<f64>("y").expect("Should contain y");
+                let id = structure.get::<u32>("id").expect("Should contain id");
+                let _ = self
+                    .command_tx
+                    .send(Command::TouchMotion(id, (x, y).into()));
+                return true;
+            } else if structure.has_name("TouchFrame") {
+                let _ = self.command_tx.send(Command::TouchFrame);
+                return true;
+            } else if(structure.has_name("TouchCancel")) {
+                let _ = self.command_tx.send(Command::TouchCancel);
+                return true;
             }
         }
         false
@@ -476,12 +500,12 @@ fn drm_to_gst_format(format: &DrmFormat) -> Option<String> {
             DrmModifier::Unrecognized(0x0100000000000009) => {
                 // NOTE: This is a workaround for the i915 4-tiled modifiers
                 //       not being advertised by gstreamer elements.
-                // - In this part we tell we map any 4-tiled modifiers 
+                // - In this part we tell we map any 4-tiled modifiers
                 //   to y-tiled ones for compatibility with gstreamer.
                 // Continued in wayland-display-core allocator/mod.rs.
                 let modifier: u64 = DrmModifier::I915_y_tiled.into();
                 Some(format!("{}:0x{:016x}", video_format, modifier))
-            },
+            }
             modifier => {
                 let modifier: u64 = modifier.into();
                 Some(format!("{}:0x{:016x}", video_format, modifier))
