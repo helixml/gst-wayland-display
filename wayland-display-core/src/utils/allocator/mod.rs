@@ -162,19 +162,40 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
             GsBufferType::DMA(buffer) => {
                 let mut gst_buffer = GstBuffer::new();
                 {
+                    let video_format =
+                        match VideoFormat::from_fourcc(buffer.buffer.format().code as u32) {
+                            // TODO: this seems to always fail
+                            VideoFormat::Unknown => {
+                                tracing::debug!(
+                                    "Failed to convert fourcc to video format: {:?}",
+                                    buffer.buffer.format().code
+                                );
+                                VideoFormat::Bgrx // TODO: Use a more appropriate fallback, can't pass DmaDRM format
+                            }
+                            format => format,
+                        };
+
+                    // Calculate the required size based on GStreamer's expectations
+                    let required_size = gst_video::VideoInfo::builder(video_format, buffer.video_info.width(), buffer.video_info.height()).build().unwrap().size();
+
                     let gst_buffer = gst_buffer.get_mut().unwrap();
                     buffer.buffer.handles().for_each(|handle| {
                         let fd = handle.as_raw_fd();
-                        let size = seek(&handle.as_fd(), SeekFrom::End(0)).unwrap();
+                        let actual_size = seek(&handle.as_fd(), SeekFrom::End(0)).unwrap() as usize;
                         let _ = seek(&handle.as_fd(), SeekFrom::Start(0)); // Reset seek point
+
+                        // Use the larger of the two sizes to ensure we have enough space
+                        let allocation_size = required_size.max(actual_size);
+
                         let memory = unsafe {
                             buffer
                                 .gst_allocator
-                                .alloc_with_flags(fd, size as usize, FdMemoryFlags::DONT_CLOSE)
+                                .alloc_with_flags(fd, allocation_size, FdMemoryFlags::DONT_CLOSE)
                                 .expect("Failed to allocate memory")
                         };
                         gst_buffer.append_memory(memory);
                     });
+
 
                     let offsets = buffer
                         .buffer
@@ -188,18 +209,6 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
                         .map(|s| s as i32)
                         .collect::<Vec<_>>();
 
-                    let video_format =
-                        match VideoFormat::from_fourcc(buffer.buffer.format().code as u32) {
-                            // TODO: this seems to always fail
-                            VideoFormat::Unknown => {
-                                tracing::debug!(
-                                    "Failed to convert fourcc to video format: {:?}",
-                                    buffer.buffer.format().code
-                                );
-                                VideoFormat::Bgrx // TODO: Use a more appropriate fallback, can't pass DmaDRM format
-                            }
-                            format => format,
-                        };
                     let meta_result = VideoMeta::add_full(
                         gst_buffer,
                         gst_video::VideoFrameFlags::empty(),
@@ -417,8 +426,8 @@ mod tests {
             plane_data[0..10 * 4],
             [
                 // R, G, B, A
-                255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
-                0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255
+                255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 0,
+                255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255
             ]
         );
 
@@ -455,6 +464,34 @@ mod tests {
         assert_eq!(
             gst_video_format_to_drm_modifier(drm_video_info.clone()).unwrap(),
             Modifier::Unrecognized(0x0300000000606010)
+        )
+    }
+
+    #[test]
+    fn test_gst_video_from_r8() {
+        test_init();
+
+        let caps = gst_video::VideoCapsBuilder::new()
+            .features([gstreamer_allocators::CAPS_FEATURE_MEMORY_DMABUF])
+            .format(gst_video::VideoFormat::DmaDrm)
+            .field("drm-format", "R8  :0x0200000000042305")
+            .height(10)
+            .width(10)
+            .pixel_aspect_ratio(1.into())
+            .framerate(gst::Fraction::new(30, 1))
+            .build();
+        assert!(caps.is_fixed()); // Required to pass gst_video_is_dma_drm_caps()
+        let drm_video_info =
+            VideoInfoDmaDrm::from_caps(&caps).expect("Failed to create video info");
+
+        assert_eq!(
+            gst_video_format_to_drm_fourcc(drm_video_info.clone()).unwrap(),
+            DrmFourcc::R8
+        );
+
+        assert_eq!(
+            gst_video_format_to_drm_modifier(drm_video_info.clone()).unwrap(),
+            Modifier::Unrecognized(0x0200000000042305)
         )
     }
 }

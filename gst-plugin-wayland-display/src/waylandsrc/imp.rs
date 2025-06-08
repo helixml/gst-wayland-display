@@ -165,7 +165,7 @@ impl EventHandler for WaylandDisplaySrc {
             } else if structure.has_name("TouchFrame") {
                 let _ = self.command_tx.send(Command::TouchFrame);
                 return true;
-            } else if(structure.has_name("TouchCancel")) {
+            } else if structure.has_name("TouchCancel") {
                 let _ = self.command_tx.send(Command::TouchCancel);
                 return true;
             }
@@ -493,7 +493,7 @@ fn drm_to_gst_format(format: &DrmFormat) -> Option<String> {
     let video_format = format.code.to_string();
     let video_format = video_format.trim();
     if format.modifier == DrmModifier::Linear {
-        Some(video_format.into())
+        Some(format!("{:<4}", video_format))
     } else {
         match format.modifier {
             DrmModifier::Invalid => None,
@@ -504,11 +504,11 @@ fn drm_to_gst_format(format: &DrmFormat) -> Option<String> {
                 //   to y-tiled ones for compatibility with gstreamer.
                 // Continued in wayland-display-core allocator/mod.rs.
                 let modifier: u64 = DrmModifier::I915_y_tiled.into();
-                Some(format!("{}:0x{:016x}", video_format, modifier))
+                Some(format!("{:<4}:0x{:016x}", video_format, modifier))
             }
             modifier => {
                 let modifier: u64 = modifier.into();
-                Some(format!("{}:0x{:016x}", video_format, modifier))
+                Some(format!("{:<4}:0x{:016x}", video_format, modifier))
             }
         }
     }
@@ -536,6 +536,14 @@ mod tests {
                 modifier: waylanddisplaycore::DrmModifier::Linear
             }),
             Some("AB24".to_string())
+        );
+
+        assert_eq!(
+            super::drm_to_gst_format(&DrmFormat {
+                code: waylanddisplaycore::Fourcc::R8,
+                modifier: waylanddisplaycore::DrmModifier::Linear
+            }),
+            Some("R8  ".to_string())
         );
 
         assert_eq!(
