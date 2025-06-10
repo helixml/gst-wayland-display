@@ -7,7 +7,7 @@ use gst_video::{VideoCapsBuilder, VideoFormat, VideoInfoDmaDrm};
 
 use gst::subclass::prelude::*;
 use gst::{glib, Event, Fraction};
-use gst::{glib::ValueArray, LibraryError};
+use gst::{LibraryError};
 use gst::{prelude::*, Structure};
 use gst_base::prelude::BaseSrcExt;
 use gst_base::subclass::base_src::CreateSuccess;
@@ -70,14 +70,10 @@ impl EventHandler for WaylandDisplaySrc {
         if event.type_() == gst::EventType::CustomUpstream {
             let structure = event.structure().expect("Unable to get message structure");
             if structure.has_name("VirtualDevicesReady") {
-                let paths = structure
-                    .get::<ValueArray>("paths")
-                    .expect("Should contain paths");
-                for value in paths.into_iter() {
-                    let path = value.get::<String>().expect("Paths are strings");
-                    let _ = self.command_tx.send(Command::InputDevice(path));
-                }
-
+                let path = structure
+                    .get::<String>("path")
+                    .expect("Should contain the path to the device as a String");
+                let _ = self.command_tx.send(Command::InputDevice(path));
                 return true;
             } else if structure.has_name("MouseMoveAbsolute") {
                 let x = structure
