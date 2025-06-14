@@ -75,8 +75,9 @@ impl GsDmaBuf {
         //   change them back to 4-tiled modifiers to make them actually work.
         //   (These modifiers overlap well enough to work interchangeably)
         // Earlier part in gst-plugin-wayland-display waylandsrc/imp.rs.
+        let mut workaround_modifier = None; 
         if drm_modifier == DrmModifier::I915_y_tiled {
-            drm_modifier = DrmModifier::Unrecognized(0x0100000000000009)
+            workaround_modifier = Some(DrmModifier::Unrecognized(0x0100000000000009));
         }
 
         let gbm = new_gbm_device(render_node)?;
@@ -84,12 +85,27 @@ impl GsDmaBuf {
         let mut dma_allocator = DmabufAllocator(allocator);
 
         let modifiers = [drm_modifier];
-        let result = dma_allocator.create_buffer(
+        let mut result = dma_allocator.create_buffer(
             video_info.width(),
             video_info.height(),
             drm_fourcc,
             &modifiers,
         );
+        if result.is_err() && workaround_modifier.is_some() {
+            tracing::warn!(
+                "Failed to create buffer with modifier {:?}, trying workaround modifier",
+                drm_modifier
+            );
+            // Try the workaround modifier
+            drm_modifier = workaround_modifier.unwrap();
+            result = dma_allocator.create_buffer(
+                video_info.width(),
+                video_info.height(),
+                drm_fourcc,
+                &[drm_modifier],
+            );
+        }
+        
         match result {
             Ok(buffer) => Some(GsDmaBuf {
                 buffer,
