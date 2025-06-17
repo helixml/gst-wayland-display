@@ -1,7 +1,7 @@
 [package]
 name = "gst-plugin-wayland-display"
 authors = ["Victoria Brekenfeld <git@drakulix.de>", "Alessandro Beltramo <github.com/ABeltramo>"]
-version = "0.2.0"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
 description = "GStreamer Wayland Compositor Src"
@@ -20,7 +20,9 @@ doc = []
 
 [dependencies]
 gst.workspace = true
-gst-base = { version = "0.20", package = "gstreamer-base", features = ["v1_18"] }
+gst-base = { version = "0.23.2", package = "gstreamer-base", features = ["v1_24"] }
+gstreamer-allocators = { version = "0.23.2", package = "gstreamer-allocators", features = ["v1_24"] }
+
 gst-video.workspace = true
 wayland-display-core = { path = "../wayland-display-core" }
 tracing.workspace = true

@@ -22,13 +22,13 @@ By default it'll install the plugin in `/usr/local/lib/gstreamer-1.0/libgstwayla
 
 You can check if the plugin is picked up by calling:
 
-```
+```bash
 GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0 gst-inspect-1.0 waylanddisplaysrc
 ```
 
 Example pipeline:
 
-```
+```bash
 GST_PLUGIN_PATH=/usr/local/lib/gstreamer-1.0 gst-launch-1.0 waylanddisplaysrc ! 'video/x-raw,width=1280,height=720,format=RGBx,framerate=60/1' !  autovideosink
 ```
 
@@ -42,8 +42,23 @@ ls $XDG_RUNTIME_DIR
 
 You should then be able to start any wayland process and use that socket
 
-``` 
+```bash 
 WAYLAND_DISPLAY=wayland-1 weston-simple-egl
+```
+
+## Zero copy pipeline support
+
+This plugin supports outputting **DMA buffers** in order to achieve a proper **zero-copy pipeline**.  
+It'll negotiate the proper caps with downstream elements using Gstreamer, you can read more about it [in the official docs](https://gstreamer.freedesktop.org/documentation/additional/design/dmabuf.html?gi-language=c).
+
+Example pipelines:
+- Nvidia
+```bash
+gst-launch-1.0 waylanddisplaysrc  ! 'video/x-raw(memory:DMABuf),width=1920,height=1080,framerate=60/1' ! glupload ! glcolorconvert ! 'video/x-raw(memory:GLMemory), format=NV12' ! nvh265enc ! nvh265dec ! autovideosink
+```
+- AMD/Intel
+```bash
+gst-launch-1.0 waylanddisplaysrc ! 'video/x-raw(memory:DMABuf),width=1920,height=1080,framerate=60/1' ! vapostproc ! 'video/x-raw(memory:VAMemory), format=NV12' ! vah265enc ! vah265dec ! autovideosink
 ```
 
 ## C Bindings

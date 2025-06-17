@@ -1,30 +1,37 @@
-use gst_video::VideoInfo;
-
 use smithay::backend::drm::CreateDrmNodeError;
 use smithay::backend::SwapBuffersError;
-use smithay::reexports::calloop::channel::Sender;
+pub use smithay::reexports::calloop::channel::{channel, Channel, Sender};
 
+pub use smithay::backend::allocator::{
+    format::FormatSet, Format as DrmFormat, Fourcc, Modifier as DrmModifier, Vendor as DrmVendor,
+};
+pub use smithay::backend::input::{ButtonState, KeyState};
+use smithay::utils::{Logical, Point};
 use std::ffi::{c_char, c_void, CString};
 use std::str::FromStr;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
-use smithay::backend::input::{ButtonState, KeyState};
-use smithay::utils::{Logical, Point};
 use utils::RenderTarget;
 
 pub(crate) mod comp;
-pub(crate) mod utils;
+pub mod utils;
 pub(crate) mod wayland;
 
-pub(crate) enum Command {
+pub use crate::utils::video_info::GstVideoInfo;
+
+pub enum Command {
     InputDevice(String),
-    VideoInfo(VideoInfo),
-    Buffer(SyncSender<Result<gst::Buffer, SwapBuffersError>>, Option<Tracer>),
+    VideoInfo(GstVideoInfo),
+    Buffer(
+        SyncSender<Result<gst::Buffer, SwapBuffersError>>,
+        Option<Tracer>,
+    ),
     KeyboardInput(u32, KeyState),
     PointerMotion(Point<f64, Logical>),
     PointerMotionAbsolute(Point<f64, Logical>),
     PointerButton(u32, ButtonState),
     PointerAxis(f64, f64),
+    GetSupportedDmaFormats(SyncSender<FormatSet>),
     TouchDown(u32, Point<f64, Logical>),
     TouchUp(u32),
     TouchMotion(u32, Point<f64, Logical>),
@@ -45,11 +52,11 @@ pub struct Trace {
 }
 
 impl Tracer {
-    pub fn new(start_fn: extern "C" fn(*const c_char) -> *mut c_void, end_fn: extern "C" fn(*mut c_void)) -> Self {
-        Tracer {
-            start_fn,
-            end_fn,
-        }
+    pub fn new(
+        start_fn: extern "C" fn(*const c_char) -> *mut c_void,
+        end_fn: extern "C" fn(*mut c_void),
+    ) -> Self {
+        Tracer { start_fn, end_fn }
     }
 
     pub fn trace(&self, name: &str) -> Trace {
@@ -128,14 +135,38 @@ impl WaylandDisplay {
         })
     }
 
-    pub fn devices(&mut self) -> impl Iterator<Item=&str> {
+    pub fn new_with_channel(
+        render_node: Option<String>,
+        command_tx: Sender<Command>,
+        commands_rx: Channel<Command>,
+    ) -> Result<WaylandDisplay, CreateDrmNodeError> {
+        let (devices_tx, devices_rx) = std::sync::mpsc::channel();
+        let (envs_tx, envs_rx) = std::sync::mpsc::channel();
+        let render_target = RenderTarget::from_str(
+            &render_node.unwrap_or_else(|| String::from("/dev/dri/renderD128")),
+        )?;
+
+        let thread_handle = std::thread::spawn(move || {
+            comp::init(commands_rx, render_target, devices_tx, envs_tx);
+        });
+
+        Ok(WaylandDisplay {
+            thread_handle: Some(thread_handle),
+            command_tx,
+            tracer: None,
+            devices: MaybeRecv::Rx(devices_rx),
+            envs: MaybeRecv::Rx(envs_rx),
+        })
+    }
+
+    pub fn devices(&mut self) -> impl Iterator<Item = &str> {
         self.devices
             .get()
             .iter()
             .map(|string| string.to_str().unwrap())
     }
 
-    pub fn env_vars(&mut self) -> impl Iterator<Item=&str> {
+    pub fn env_vars(&mut self) -> impl Iterator<Item = &str> {
         self.envs
             .get()
             .iter()
@@ -146,12 +177,16 @@ impl WaylandDisplay {
         let _ = self.command_tx.send(Command::InputDevice(path.into()));
     }
 
-    pub fn set_video_info(&self, info: VideoInfo) {
+    pub fn set_video_info(&self, info: GstVideoInfo) {
         let _ = self.command_tx.send(Command::VideoInfo(info));
     }
 
     pub fn keyboard_input(&self, key: u32, pressed: bool) {
-        let state = if pressed { KeyState::Pressed } else { KeyState::Released };
+        let state = if pressed {
+            KeyState::Pressed
+        } else {
+            KeyState::Released
+        };
         let _ = self.command_tx.send(Command::KeyboardInput(key, state));
     }
 
@@ -160,11 +195,17 @@ impl WaylandDisplay {
     }
 
     pub fn pointer_motion_absolute(&self, x: f64, y: f64) {
-        let _ = self.command_tx.send(Command::PointerMotionAbsolute((x, y).into()));
+        let _ = self
+            .command_tx
+            .send(Command::PointerMotionAbsolute((x, y).into()));
     }
 
     pub fn pointer_button(&self, button: u32, pressed: bool) {
-        let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
+        let state = if pressed {
+            ButtonState::Pressed
+        } else {
+            ButtonState::Released
+        };
         let _ = self.command_tx.send(Command::PointerButton(button, state));
     }
 
@@ -179,7 +220,7 @@ impl WaylandDisplay {
     pub fn touch_up(&self, id: u32) {
         let _ = self.command_tx.send(Command::TouchUp(id));
     }
-    
+
     pub fn touch_motion(&self, id: u32, rel_x: f64, rel_y: f64) {
         let _ = self.command_tx.send(Command::TouchMotion(id, (rel_x, rel_y).into()));
     }
@@ -194,7 +235,10 @@ impl WaylandDisplay {
 
     pub fn frame(&self) -> Result<gst::Buffer, gst::FlowError> {
         let (buffer_tx, buffer_rx) = mpsc::sync_channel(0);
-        if let Err(err) = self.command_tx.send(Command::Buffer(buffer_tx, self.tracer.clone())) {
+        if let Err(err) = self
+            .command_tx
+            .send(Command::Buffer(buffer_tx, self.tracer.clone()))
+        {
             tracing::warn!(?err, "Failed to send buffer command.");
             return Err(gst::FlowError::Eos);
         }
@@ -211,6 +255,14 @@ impl WaylandDisplay {
                 Err(gst::FlowError::Error)
             }
         }
+    }
+
+    pub fn get_supported_dma_formats(&self) -> FormatSet {
+        let (buffer_tx, buffer_rx) = mpsc::sync_channel(0);
+        let _ = self
+            .command_tx
+            .send(Command::GetSupportedDmaFormats(buffer_tx));
+        buffer_rx.recv().unwrap()
     }
 }
 

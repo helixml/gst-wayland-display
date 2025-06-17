@@ -1,36 +1,43 @@
+use std::fmt::Debug;
+use std::ops::DerefMut;
 use std::sync::Mutex;
 
 use gst::message::Application;
-use gst_video::{VideoCapsBuilder, VideoFormat};
+use gst_video::{VideoCapsBuilder, VideoFormat, VideoInfoDmaDrm};
 
 use gst::subclass::prelude::*;
 use gst::{glib, Event, Fraction};
-use gst::{
-    glib::{once_cell::sync::Lazy, ValueArray},
-    LibraryError,
-};
+use gst::{LibraryError};
 use gst::{prelude::*, Structure};
-
+use gst_base::prelude::BaseSrcExt;
 use gst_base::subclass::base_src::CreateSuccess;
 use gst_base::subclass::prelude::*;
-use gst_base::traits::BaseSrcExt;
-
+use once_cell::sync::Lazy;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::Registry;
-use waylanddisplaycore::WaylandDisplay;
+use waylanddisplaycore::{
+    channel, ButtonState, Channel, Command, DrmFormat, DrmModifier, GstVideoInfo, KeyState, Sender,
+    WaylandDisplay,
+};
 
 use crate::utils::{GstLayer, CAT};
 
 pub struct WaylandDisplaySrc {
     state: Mutex<Option<State>>,
     settings: Mutex<Settings>,
+    command_tx: Sender<Command>,
+    command_rx: Mutex<Option<Channel<Command>>>,
 }
 
 impl Default for WaylandDisplaySrc {
     fn default() -> Self {
+        let (command_tx, command_rx) = channel();
+
         WaylandDisplaySrc {
             state: Mutex::new(None),
             settings: Mutex::new(Settings::default()),
+            command_tx,
+            command_rx: Mutex::new(Some(command_rx)),
         }
     }
 }
@@ -51,6 +58,116 @@ impl ObjectSubclass for WaylandDisplaySrc {
     type Type = super::WaylandDisplaySrc;
     type ParentType = gst_base::PushSrc;
     type Interfaces = ();
+}
+
+trait EventHandler {
+    fn handle_event(&self, event: &Event) -> bool;
+}
+
+impl EventHandler for WaylandDisplaySrc {
+    fn handle_event(&self, event: &Event) -> bool {
+        tracing::debug!("Received event: {:?}", event);
+        if event.type_() == gst::EventType::CustomUpstream {
+            let structure = event.structure().expect("Unable to get message structure");
+            if structure.has_name("VirtualDevicesReady") {
+                let path = structure
+                    .get::<String>("path")
+                    .expect("Should contain the path to the device as a String");
+                let _ = self.command_tx.send(Command::InputDevice(path));
+                return true;
+            } else if structure.has_name("MouseMoveAbsolute") {
+                let x = structure
+                    .get::<f64>("pointer_x")
+                    .expect("Should contain pointer_x");
+                let y = structure
+                    .get::<f64>("pointer_y")
+                    .expect("Should contain pointer_y");
+
+                let _ = self
+                    .command_tx
+                    .send(Command::PointerMotionAbsolute((x, y).into()));
+
+                return true;
+            } else if structure.has_name("MouseMoveRelative") {
+                let x = structure
+                    .get::<f64>("pointer_x")
+                    .expect("Should contain pointer_x");
+                let y = structure
+                    .get::<f64>("pointer_y")
+                    .expect("Should contain pointer_y");
+
+                let _ = self.command_tx.send(Command::PointerMotion((x, y).into()));
+
+                return true;
+            } else if structure.has_name("MouseButton") {
+                let button = structure
+                    .get::<u32>("button")
+                    .expect("Should contain button");
+                let pressed = structure
+                    .get::<bool>("pressed")
+                    .expect("Should contain pressed");
+
+                let _ = self.command_tx.send(Command::PointerButton(
+                    button,
+                    if pressed {
+                        ButtonState::Pressed
+                    } else {
+                        ButtonState::Released
+                    },
+                ));
+
+                return true;
+            } else if structure.has_name("MouseAxis") {
+                let x = structure.get::<f64>("x").expect("Should contain x");
+                let y = structure.get::<f64>("y").expect("Should contain y");
+
+                let _ = self.command_tx.send(Command::PointerAxis(x, y));
+
+                return true;
+            } else if structure.has_name("KeyboardKey") {
+                let key = structure.get::<u32>("key").expect("Should contain key");
+                let pressed = structure
+                    .get::<bool>("pressed")
+                    .expect("Should contain pressed");
+
+                let _ = self.command_tx.send(Command::KeyboardInput(
+                    key,
+                    if pressed {
+                        KeyState::Pressed
+                    } else {
+                        KeyState::Released
+                    },
+                ));
+
+                return true;
+            } else if structure.has_name("TouchDown") {
+                let x = structure.get::<f64>("x").expect("Should contain x");
+                let y = structure.get::<f64>("y").expect("Should contain y");
+                let id = structure.get::<u32>("id").expect("Should contain id");
+                let _ = self.command_tx.send(Command::TouchDown(id, (x, y).into()));
+                return true;
+            } else if structure.has_name("TouchUp") {
+                let id = structure.get::<u32>("id").expect("Should contain id");
+                let _ = self.command_tx.send(Command::TouchUp(id));
+                return true;
+            } else if structure.has_name("TouchMotion") {
+                let x = structure.get::<f64>("x").expect("Should contain x");
+                let y = structure.get::<f64>("y").expect("Should contain y");
+                let id = structure.get::<u32>("id").expect("Should contain id");
+                let _ = self
+                    .command_tx
+                    .send(Command::TouchMotion(id, (x, y).into()));
+                return true;
+            } else if structure.has_name("TouchFrame") {
+                let _ = self.command_tx.send(Command::TouchFrame);
+                return true;
+            } else if structure.has_name("TouchCancel") {
+                let _ = self.command_tx.send(Command::TouchCancel);
+                return true;
+            }
+        }
+        false
+    }
 }
 
 impl ObjectImpl for WaylandDisplaySrc {
@@ -151,11 +268,18 @@ impl ElementImpl for WaylandDisplaySrc {
                 "Wayland display source",
                 "Source/Video",
                 "GStreamer video src running a wayland compositor",
-                "Victoria Brekenfeld <wayland@drakulix.de>",
+                "Victoria Brekenfeld <wayland@drakulix.de>, ABeltramo <https://github.com/ABeltramo>",
             )
         });
 
         Some(&*ELEMENT_METADATA)
+    }
+
+    fn send_event(&self, event: Event) -> bool {
+        if self.handle_event(&event) {
+            return true;
+        }
+        self.parent_send_event(event)
     }
 
     fn pad_templates() -> &'static [gst::PadTemplate] {
@@ -166,11 +290,21 @@ impl ElementImpl for WaylandDisplaySrc {
                 .width_range(..i32::MAX)
                 .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
                 .build();
+            let mut dmabuf_caps = gst_video::VideoCapsBuilder::new()
+                .features([gstreamer_allocators::CAPS_FEATURE_MEMORY_DMABUF])
+                .format(VideoFormat::DmaDrm)
+                // we can let the drm-format field absent to mean the super set of all formats
+                // we'll negotiate the actual format with the pads
+                .height_range(..i32::MAX)
+                .width_range(..i32::MAX)
+                .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
+                .build();
+            dmabuf_caps.merge(caps);
             let src_pad_template = gst::PadTemplate::new(
                 "src",
                 gst::PadDirection::Src,
                 gst::PadPresence::Always,
-                &caps,
+                &dmabuf_caps,
             )
             .unwrap();
 
@@ -216,6 +350,40 @@ impl BaseSrcImpl for WaylandDisplaySrc {
             .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
             .build();
 
+        let state = self.state.lock().unwrap();
+        let gst_dma_formats: Vec<String> = match state.as_ref() {
+            None => Default::default(),
+            Some(state) => {
+                let dma_formats = state.display.get_supported_dma_formats();
+                dma_formats.iter().filter_map(drm_to_gst_format).collect()
+            }
+        };
+
+        tracing::info!("Supported DMA formats: {:?}", gst_dma_formats);
+
+        if gst_dma_formats.is_empty() {
+            let dmabuf_caps = gst_video::VideoCapsBuilder::new()
+                .features([gstreamer_allocators::CAPS_FEATURE_MEMORY_DMABUF])
+                .format(VideoFormat::DmaDrm)
+                .height_range(..i32::MAX)
+                .width_range(..i32::MAX)
+                .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
+                .build();
+            caps.merge(dmabuf_caps);
+        } else {
+            for format in gst_dma_formats {
+                let dmabuf_caps = gst_video::VideoCapsBuilder::new()
+                    .features([gstreamer_allocators::CAPS_FEATURE_MEMORY_DMABUF])
+                    .format(VideoFormat::DmaDrm)
+                    .field("drm-format", &format)
+                    .height_range(..i32::MAX)
+                    .width_range(..i32::MAX)
+                    .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
+                    .build();
+                caps.merge(dmabuf_caps);
+            }
+        }
+
         if let Some(filter) = filter {
             caps = caps.intersect(filter);
         }
@@ -228,99 +396,21 @@ impl BaseSrcImpl for WaylandDisplaySrc {
     }
 
     fn event(&self, event: &Event) -> bool {
-        if event.type_() == gst::EventType::CustomUpstream {
-            let structure = event.structure().expect("Unable to get message structure");
-            if structure.has_name("VirtualDevicesReady") {
-                let mut state = self.state.lock().unwrap();
-                let display = &mut state.as_mut().unwrap().display;
-
-                let paths = structure
-                    .get::<ValueArray>("paths")
-                    .expect("Should contain paths");
-                for value in paths.into_iter() {
-                    let path = value.get::<String>().expect("Paths are strings");
-                    display.add_input_device(path);
-                }
-
-                return true;
-            } else if structure.has_name("MouseMoveAbsolute") {
-                let mut state = self.state.lock().unwrap();
-                let display = &mut state.as_mut().unwrap().display;
-
-                let x = structure
-                    .get::<f64>("pointer_x")
-                    .expect("Should contain pointer_x");
-                let y = structure
-                    .get::<f64>("pointer_y")
-                    .expect("Should contain pointer_y");
-
-                display.pointer_motion_absolute(x, y);
-
-                return true;
-            } else if structure.has_name("MouseMoveRelative") {
-                let mut state = self.state.lock().unwrap();
-                let display = &mut state.as_mut().unwrap().display;
-
-                let x = structure
-                    .get::<f64>("pointer_x")
-                    .expect("Should contain pointer_x");
-                let y = structure
-                    .get::<f64>("pointer_y")
-                    .expect("Should contain pointer_y");
-
-                display.pointer_motion(x, y);
-
-                return true;
-            } else if structure.has_name("MouseButton") {
-                let mut state = self.state.lock().unwrap();
-                let display = &mut state.as_mut().unwrap().display;
-
-                let button = structure
-                    .get::<u32>("button")
-                    .expect("Should contain button");
-                let pressed = structure
-                    .get::<bool>("pressed")
-                    .expect("Should contain pressed");
-
-                display.pointer_button(button, pressed);
-
-                return true;
-            } else if structure.has_name("MouseAxis") {
-                let mut state = self.state.lock().unwrap();
-                let display = &mut state.as_mut().unwrap().display;
-
-                let x = structure.get::<f64>("x").expect("Should contain x");
-                let y = structure.get::<f64>("y").expect("Should contain y");
-
-                display.pointer_axis(x, y);
-
-                return true;
-            } else if structure.has_name("KeyboardKey") {
-                let mut state = self.state.lock().unwrap();
-                let display = &mut state.as_mut().unwrap().display;
-
-                let key = structure.get::<u32>("key").expect("Should contain key");
-                let pressed = structure
-                    .get::<bool>("pressed")
-                    .expect("Should contain pressed");
-
-                display.keyboard_input(key, pressed);
-
-                return true;
-            }
+        if self.handle_event(&event) {
+            return true;
         }
         self.parent_event(event)
     }
 
     fn set_caps(&self, caps: &gst::Caps) -> Result<(), gst::LoggableError> {
-        let video_info = gst_video::VideoInfo::from_caps(caps).expect("failed to get video info");
-        self.state
-            .lock()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .display
-            .set_video_info(video_info);
+        let video_info = match VideoInfoDmaDrm::from_caps(caps) {
+            Ok(dma_video_info) => GstVideoInfo::DMA(dma_video_info),
+            Err(_) => GstVideoInfo::RAW(
+                gst_video::VideoInfo::from_caps(caps).expect("failed to get video info"),
+            ),
+        };
+
+        let _ = self.command_tx.send(Command::VideoInfo(video_info));
 
         self.parent_set_caps(caps)
     }
@@ -336,7 +426,12 @@ impl BaseSrcImpl for WaylandDisplaySrc {
         let subscriber = Registry::default().with(GstLayer);
 
         let Ok(mut display) = tracing::subscriber::with_default(subscriber, || {
-            WaylandDisplay::new(settings.render_node.clone())
+            let mut command_rx = self.command_rx.lock().unwrap();
+            WaylandDisplay::new_with_channel(
+                settings.render_node.clone(),
+                self.command_tx.clone(),
+                command_rx.deref_mut().take().unwrap(),
+            )
         }) else {
             return Err(gst::error_msg!(LibraryError::Failed, ("Failed to open drm node {}, if you want to utilize software rendering set `render-node=software`.", settings.render_node.as_deref().unwrap_or("/dev/dri/renderD128"))));
         };
@@ -387,5 +482,72 @@ impl PushSrcImpl for WaylandDisplaySrc {
         tracing::subscriber::with_default(subscriber, || {
             state.display.frame().map(CreateSuccess::NewBuffer)
         })
+    }
+}
+
+fn drm_to_gst_format(format: &DrmFormat) -> Option<String> {
+    let video_format = format.code.to_string();
+    let video_format = video_format.trim();
+    if format.modifier == DrmModifier::Linear {
+        Some(format!("{:<4}", video_format))
+    } else {
+        match format.modifier {
+            DrmModifier::Invalid => None,
+            DrmModifier::Unrecognized(0x0100000000000009) => {
+                // NOTE: This is a workaround for the i915 4-tiled modifiers
+                //       not being advertised by gstreamer elements.
+                // - In this part we tell we map any 4-tiled modifiers
+                //   to y-tiled ones for compatibility with gstreamer.
+                // Continued in wayland-display-core allocator/mod.rs.
+                let modifier: u64 = DrmModifier::I915_y_tiled.into();
+                Some(format!("{:<4}:0x{:016x}", video_format, modifier))
+            }
+            modifier => {
+                let modifier: u64 = modifier.into();
+                Some(format!("{:<4}:0x{:016x}", video_format, modifier))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use waylanddisplaycore::utils::tests::INIT;
+    use waylanddisplaycore::DrmFormat;
+
+    fn test_init() -> () {
+        INIT.call_once(|| {
+            tracing_subscriber::fmt::try_init().ok();
+            gst::init().expect("Failed to initialize GStreamer");
+        });
+    }
+
+    #[test]
+    fn test_drm_format_to_gstreamer() {
+        test_init();
+
+        assert_eq!(
+            super::drm_to_gst_format(&DrmFormat {
+                code: waylanddisplaycore::Fourcc::Abgr8888,
+                modifier: waylanddisplaycore::DrmModifier::Linear
+            }),
+            Some("AB24".to_string())
+        );
+
+        assert_eq!(
+            super::drm_to_gst_format(&DrmFormat {
+                code: waylanddisplaycore::Fourcc::R8,
+                modifier: waylanddisplaycore::DrmModifier::Linear
+            }),
+            Some("R8  ".to_string())
+        );
+
+        assert_eq!(
+            super::drm_to_gst_format(&DrmFormat {
+                code: waylanddisplaycore::Fourcc::Rgba8888,
+                modifier: waylanddisplaycore::DrmModifier::Nvidia_16bx2_block_eight_gob
+            }),
+            Some("RA24:0x0300000000000013".to_string())
+        );
     }
 }
