@@ -2,6 +2,7 @@ use super::{Command, GstVideoInfo};
 use gst_video::VideoInfo;
 use smithay::backend::allocator::format::FormatSet;
 use smithay::backend::input::AxisSource;
+use smithay::backend::input::TouchSlot;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::reexports::gbm::BufferObjectFlags;
 use smithay::{
@@ -60,7 +61,6 @@ use std::{
     sync::{mpsc::Sender, Arc},
     time::{Duration, Instant},
 };
-use smithay::backend::input::TouchSlot;
 use tracing::debug;
 
 mod focus;
@@ -253,6 +253,14 @@ pub(crate) fn init(
         .insert_source(command_src, move |event, _, state| {
             match event {
                 Event::Msg(Command::VideoInfo(video_info)) => {
+                    // Only change the output if it's not running already
+                    // TODO: properly support automatic resolution switching with DMA buffers
+                    if state.output.is_some() {
+                        tracing::info!(
+                            "Output already running, ignoring newly negotiated video info"
+                        );
+                        return;
+                    }
                     let base_info: VideoInfo = video_info.clone().into();
                     debug!(
                         "Requested video format: {} .to_fourcc() = {}",
@@ -521,9 +529,14 @@ pub(crate) fn init(
                 }
                 Event::Msg(Command::TouchDown(id, rel_position)) => {
                     let time: Duration = state.clock.now().into();
-                    let logical_position = state.relative_touch_to_logical(rel_position)
+                    let logical_position = state
+                        .relative_touch_to_logical(rel_position)
                         .expect("Failed to convert relative touch position to logical coordinates");
-                    state.touch_down(time.as_millis() as u32, TouchSlot::from(Some(id)), logical_position);
+                    state.touch_down(
+                        time.as_millis() as u32,
+                        TouchSlot::from(Some(id)),
+                        logical_position,
+                    );
                 }
                 Event::Msg(Command::TouchUp(id)) => {
                     let time: Duration = state.clock.now().into();
@@ -531,9 +544,14 @@ pub(crate) fn init(
                 }
                 Event::Msg(Command::TouchMotion(id, rel_position)) => {
                     let time: Duration = state.clock.now().into();
-                    let logical_position = state.relative_touch_to_logical(rel_position)
+                    let logical_position = state
+                        .relative_touch_to_logical(rel_position)
                         .expect("Failed to convert relative touch position to logical coordinates");
-                    state.touch_motion(time.as_millis() as u32, TouchSlot::from(Some(id)), logical_position);
+                    state.touch_motion(
+                        time.as_millis() as u32,
+                        TouchSlot::from(Some(id)),
+                        logical_position,
+                    );
                 }
                 Event::Msg(Command::TouchCancel) => {
                     state.touch_cancel();
