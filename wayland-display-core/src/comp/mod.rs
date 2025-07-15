@@ -1,4 +1,4 @@
-use super::{Command, GstVideoInfo};
+use super::{Command, DrmFormat, GstVideoInfo};
 use gst_video::VideoInfo;
 use smithay::backend::allocator::format::FormatSet;
 use smithay::backend::input::AxisSource;
@@ -70,7 +70,10 @@ mod rendering;
 pub use self::focus::*;
 pub use self::input::*;
 pub use self::rendering::*;
-use crate::utils::allocator::{new_gbm_device, GsBufferType, GsDmaBuf, GsGlesbuffer};
+use crate::utils::allocator::{
+    gst_video_format_to_drm_fourcc, gst_video_format_to_drm_modifier, new_gbm_device, GsBuffer,
+    GsBufferType, GsDmaBuf, GsGlesbuffer, VideoInfoTypes,
+};
 use crate::utils::renderer::setup_renderer;
 use crate::{utils::RenderTarget, wayland::protocols::wl_drm::create_drm_global};
 
@@ -508,21 +511,46 @@ pub(crate) fn init(
                 }
                 Event::Msg(Command::GetSupportedDmaFormats(sender)) => {
                     let formats = Bind::<Dmabuf>::supported_formats(&state.renderer);
-                    let supported_formats = match state.render_node {
-                        Some(node) => {
-                            let gbm_dev =
-                                new_gbm_device(node).expect("Failed to create gbm device");
-                            formats
-                                .unwrap_or_default()
-                                .iter()
-                                .filter(|f| {
-                                    gbm_dev
-                                        .is_format_supported(f.code, BufferObjectFlags::RENDERING)
-                                })
-                                .map(|f| *f)
-                                .collect()
+                    let supported_formats = match &state.output_buffer {
+                        None => match state.render_node {
+                            // If there's no output_buffer, we'll return all supported DMA formats
+                            Some(node) => {
+                                let gbm_dev =
+                                    new_gbm_device(node).expect("Failed to create gbm device");
+                                formats
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .filter(|f| {
+                                        gbm_dev.is_format_supported(
+                                            f.code,
+                                            BufferObjectFlags::RENDERING,
+                                        )
+                                    })
+                                    .map(|f| *f)
+                                    .collect()
+                            }
+                            None => FormatSet::default(),
+                        },
+                        Some(output_buffer) => {
+                            // If we already have negotiated an output buffer,
+                            // that's the only format that we are going to support
+                            match output_buffer.get_video_info() {
+                                VideoInfoTypes::VideoInfo(_) => FormatSet::default(),
+                                VideoInfoTypes::VideoInfoDmaDrm(video_info) => {
+                                    let fourcc = gst_video_format_to_drm_fourcc(&video_info);
+                                    let modifier = gst_video_format_to_drm_modifier(&video_info);
+                                    let drm_format = DrmFormat {
+                                        code: fourcc.expect(
+                                            "Failed to convert gst_video_format to drm_fourcc",
+                                        ),
+                                        modifier: modifier.expect(
+                                            "Failed to convert gst_video_format to drm_modifier",
+                                        ),
+                                    };
+                                    FormatSet::from_iter([drm_format])
+                                }
+                            }
                         }
-                        None => FormatSet::default(),
                     };
                     debug!("Supported dma formats: {:?}", supported_formats);
                     let _ = sender.send(supported_formats);

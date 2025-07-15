@@ -60,9 +60,9 @@ pub fn new_gbm_device(render_node: DrmNode) -> Option<GbmDevice<DeviceFd>> {
 
 impl GsDmaBuf {
     pub fn new(render_node: DrmNode, video_info: VideoInfoDmaDrm) -> Option<Self> {
-        tracing::debug!("Creating DMA buffer from {:?}", video_info);
-        let drm_fourcc = gst_video_format_to_drm_fourcc(video_info.clone())?;
-        let mut drm_modifier = gst_video_format_to_drm_modifier(video_info.clone())?;
+        tracing::debug!("Creating DMA buffer from {:?}", &video_info);
+        let drm_fourcc = gst_video_format_to_drm_fourcc(&video_info)?;
+        let mut drm_modifier = gst_video_format_to_drm_modifier(&video_info)?;
         tracing::info!(
             "Creating DMA buffer - DrmFourcc: {:?}, Modifier: {:?}",
             drm_fourcc,
@@ -75,7 +75,7 @@ impl GsDmaBuf {
         //   change them back to 4-tiled modifiers to make them actually work.
         //   (These modifiers overlap well enough to work interchangeably)
         // Earlier part in gst-plugin-wayland-display waylandsrc/imp.rs.
-        let mut workaround_modifier = None; 
+        let mut workaround_modifier = None;
         if drm_modifier == DrmModifier::I915_y_tiled {
             workaround_modifier = Some(DrmModifier::Unrecognized(0x0100000000000009));
         }
@@ -105,7 +105,7 @@ impl GsDmaBuf {
                 &[drm_modifier],
             );
         }
-        
+
         match result {
             Ok(buffer) => Some(GsDmaBuf {
                 buffer,
@@ -123,10 +123,18 @@ pub enum GsBufferType {
     DMA(GsDmaBuf),
 }
 
+pub enum VideoInfoTypes {
+    VideoInfo(VideoInfo),
+    VideoInfoDmaDrm(VideoInfoDmaDrm),
+}
+
 pub trait GsBuffer<R: Renderer> {
     fn bind(&mut self, renderer: &mut R) -> Result<(), R::Error>;
 
     fn to_gs_buffer(&self, renderer: &mut R) -> gst::Buffer;
+
+    // Returns the underlying VideoInfo or VideoInfoDmaDrm
+    fn get_video_info(&self) -> VideoInfoTypes;
 }
 
 impl GsBuffer<GlesRenderer> for GsBufferType {
@@ -192,7 +200,14 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
                         };
 
                     // Calculate the required size based on GStreamer's expectations
-                    let required_size = gst_video::VideoInfo::builder(video_format, buffer.video_info.width(), buffer.video_info.height()).build().unwrap().size();
+                    let required_size = gst_video::VideoInfo::builder(
+                        video_format,
+                        buffer.video_info.width(),
+                        buffer.video_info.height(),
+                    )
+                    .build()
+                    .unwrap()
+                    .size();
 
                     let gst_buffer = gst_buffer.get_mut().unwrap();
                     buffer.buffer.handles().for_each(|handle| {
@@ -211,7 +226,6 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
                         };
                         gst_buffer.append_memory(memory);
                     });
-
 
                     let offsets = buffer
                         .buffer
@@ -242,9 +256,16 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
             }
         }
     }
+
+    fn get_video_info(&self) -> VideoInfoTypes {
+        match self {
+            GsBufferType::RAW(buffer) => VideoInfoTypes::VideoInfo(buffer.video_info.clone()),
+            GsBufferType::DMA(buffer) => VideoInfoTypes::VideoInfoDmaDrm(buffer.video_info.clone()),
+        }
+    }
 }
 
-pub fn gst_video_format_to_drm_fourcc(format: VideoInfoDmaDrm) -> Option<DrmFourcc> {
+pub fn gst_video_format_to_drm_fourcc(format: &VideoInfoDmaDrm) -> Option<DrmFourcc> {
     // VideoFormat::from_fourcc() returns format unknown for some reason, so we manually parse the caps
     let fourcc = DrmFourcc::try_from(format.fourcc());
     match fourcc {
@@ -282,7 +303,7 @@ pub fn gst_video_format_to_drm_fourcc(format: VideoInfoDmaDrm) -> Option<DrmFour
     }
 }
 
-pub fn gst_video_format_to_drm_modifier(format: VideoInfoDmaDrm) -> Option<DrmModifier> {
+pub fn gst_video_format_to_drm_modifier(format: &VideoInfoDmaDrm) -> Option<DrmModifier> {
     let full_modifier = format.modifier();
     match Modifier::try_from(full_modifier) {
         Ok(modifier) => Some(modifier),
@@ -411,15 +432,15 @@ mod tests {
             VideoInfoDmaDrm::from_caps(&caps).expect("Failed to create video info");
 
         assert_eq!(
-            gst_video_format_to_drm_fourcc(drm_video_info.clone()),
+            gst_video_format_to_drm_fourcc(&drm_video_info),
             Some(DrmFourcc::Abgr8888)
         );
         assert_eq!(
-            gst_video_format_to_drm_modifier(drm_video_info.clone()),
+            gst_video_format_to_drm_modifier(&drm_video_info),
             Some(Modifier::Linear)
         );
 
-        let raw_buffer = GsDmaBuf::new(render_node, drm_video_info.clone());
+        let raw_buffer = GsDmaBuf::new(render_node, drm_video_info);
         assert!(raw_buffer.is_some());
 
         let mut buffer = GsBufferType::DMA(raw_buffer.clone().unwrap());
@@ -473,12 +494,12 @@ mod tests {
             VideoInfoDmaDrm::from_caps(&caps).expect("Failed to create video info");
 
         assert_eq!(
-            gst_video_format_to_drm_fourcc(drm_video_info.clone()).unwrap(),
+            gst_video_format_to_drm_fourcc(&drm_video_info).unwrap(),
             DrmFourcc::try_from(875708993).unwrap()
         );
 
         assert_eq!(
-            gst_video_format_to_drm_modifier(drm_video_info.clone()).unwrap(),
+            gst_video_format_to_drm_modifier(&drm_video_info).unwrap(),
             Modifier::Unrecognized(0x0300000000606010)
         )
     }
@@ -501,12 +522,12 @@ mod tests {
             VideoInfoDmaDrm::from_caps(&caps).expect("Failed to create video info");
 
         assert_eq!(
-            gst_video_format_to_drm_fourcc(drm_video_info.clone()).unwrap(),
+            gst_video_format_to_drm_fourcc(&drm_video_info).unwrap(),
             DrmFourcc::R8
         );
 
         assert_eq!(
-            gst_video_format_to_drm_modifier(drm_video_info.clone()).unwrap(),
+            gst_video_format_to_drm_modifier(&drm_video_info).unwrap(),
             Modifier::Unrecognized(0x0200000000042305)
         )
     }
