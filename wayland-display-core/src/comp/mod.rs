@@ -61,6 +61,7 @@ use std::{
     sync::{mpsc::Sender, Arc},
     time::{Duration, Instant},
 };
+use smithay::wayland::presentation::Refresh;
 use tracing::debug;
 
 mod focus;
@@ -330,8 +331,7 @@ pub(crate) fn init(
                         .to_i32_round();
                     for window in state.space.elements() {
                         let toplevel = window.toplevel().unwrap();
-                        let max_size = Rectangle::from_loc_and_size(
-                            (0, 0),
+                        let max_size = Rectangle::from_size(
                             with_states(toplevel.wl_surface(), |states| {
                                 states
                                     .data_map
@@ -348,7 +348,7 @@ pub(crate) fn init(
                         );
 
                         let new_size = max_size
-                            .intersection(Rectangle::from_loc_and_size((0, 0), new_size))
+                            .intersection(Rectangle::from_size(new_size))
                             .map(|rect| rect.size);
                         toplevel.with_pending_state(|state| state.size = new_size);
                         toplevel.send_configure();
@@ -424,13 +424,13 @@ pub(crate) fn init(
                                     if rendered_damage {
                                         output_presentation_feedback.presented(
                                             state.clock.now(),
-                                            Duration::from_millis(
+                                            Refresh::Fixed(Duration::from_millis(
                                                 output
                                                     .current_mode()
                                                     .map(|mode| mode.refresh)
                                                     .unwrap_or_default()
                                                     as u64,
-                                            ),
+                                            )),
                                             0,
                                             wp_presentation_feedback::Kind::Vsync,
                                         );
@@ -484,15 +484,15 @@ pub(crate) fn init(
                 }
                 Event::Msg(Command::KeyboardInput(keycode, key_state)) => {
                     let time: Duration = state.clock.now().into();
-                    state.keyboard_input(time.as_millis() as u32, keycode, key_state);
+                    state.keyboard_input(time.as_millis() as u32, keycode.into(), key_state);
                 }
                 Event::Msg(Command::PointerMotion(position)) => {
                     let time: Duration = state.clock.now().into();
-                    state.pointer_motion(time.as_nanos() as u64, position, position);
+                    state.pointer_motion(time.as_millis() as u32, time.as_nanos() as u64, position, position);
                 }
                 Event::Msg(Command::PointerMotionAbsolute(position)) => {
                     let time: Duration = state.clock.now().into();
-                    state.pointer_motion_absolute(time.as_nanos() as u64, position);
+                    state.pointer_motion_absolute(time.as_millis() as u32, position);
                 }
                 Event::Msg(Command::PointerButton(btn_code, btn_state)) => {
                     let time: Duration = state.clock.now().into();

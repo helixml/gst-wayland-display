@@ -2,11 +2,11 @@
 name = "gst-plugin-wayland-display"
 authors = ["Victoria Brekenfeld <git@drakulix.de>", "Alessandro Beltramo <github.com/ABeltramo>"]
 version = "0.4.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 description = "GStreamer Wayland Compositor Src"
 repository = "https://github.com/games-on-whales/wolf"
-rust-version = "1.72"
+rust-version = "1.88"
 
 [lib]
 name = "gstwaylanddisplaysrc"
