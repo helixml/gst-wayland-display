@@ -4,7 +4,6 @@ use smithay::{
     wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
 };
 
-
 use crate::comp::State;
 
 impl DmabufHandler for State {
@@ -16,7 +15,8 @@ impl DmabufHandler for State {
         &mut self,
         _global: &DmabufGlobal,
         dmabuf: Dmabuf,
-        notifier: ImportNotifier) {
+        notifier: ImportNotifier,
+    ) {
         if self.renderer.import_dmabuf(&dmabuf, None).is_ok() {
             let _ = notifier.successful::<State>();
         } else {

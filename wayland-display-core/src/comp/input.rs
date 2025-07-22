@@ -1,30 +1,28 @@
-use super::{focus::FocusTarget, State};
+use super::{State, focus::FocusTarget};
+use smithay::backend::input::Keycode;
+use smithay::backend::libinput::LibinputInputBackend;
 use smithay::input::keyboard::Keysym;
 use smithay::reexports::input::event::pointer::PointerEventTrait;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::{
-    backend::{
-        input::{
-            Axis, AxisSource, ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent,
-            PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent, TouchSlot,
-            AbsolutePositionEvent,
-        },
+    backend::input::{
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputEvent, KeyState,
+        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent,
+        TouchSlot,
     },
     input::{
-        keyboard::{keysyms, FilterResult},
+        keyboard::{FilterResult, keysyms},
         pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
-        touch::{DownEvent, UpEvent, MotionEvent as TouchMotionEvent},
+        touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent},
     },
     reexports::{
         input::LibinputInterface,
-        rustix::fs::{open, Mode, OFlags},
+        rustix::fs::{Mode, OFlags, open},
     },
-    utils::{Logical, Point, Serial, SERIAL_COUNTER},
-    wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint},
+    utils::{Logical, Point, SERIAL_COUNTER, Serial},
+    wayland::pointer_constraints::{PointerConstraint, with_pointer_constraint},
 };
 use std::{os::unix::io::OwnedFd, path::Path, time::Instant};
-use smithay::backend::input::{Keycode};
-use smithay::backend::libinput::LibinputInputBackend;
 
 pub struct NixInterface;
 
@@ -173,7 +171,11 @@ impl State {
         // If confined, don't move pointer if it would go outside surface or region
         if pointer_confined {
             if let Some((surface, surface_loc)) = &under {
-                if new_under.as_ref().and_then(|(under, _): &(FocusTarget, Point<f64, Logical>)| under.wl_surface()) != surface.wl_surface() {
+                if new_under
+                    .as_ref()
+                    .and_then(|(under, _): &(FocusTarget, Point<f64, Logical>)| under.wl_surface())
+                    != surface.wl_surface()
+                {
                     pointer.frame(self);
                     return;
                 }
@@ -293,7 +295,10 @@ impl State {
         pointer.frame(self);
     }
 
-    fn touch_location_transformed<B: smithay::backend::input::InputBackend, E: AbsolutePositionEvent<B>>(
+    fn touch_location_transformed<
+        B: smithay::backend::input::InputBackend,
+        E: AbsolutePositionEvent<B>,
+    >(
         &self,
         evt: &E,
     ) -> Option<Point<f64, Logical>> {
@@ -314,10 +319,11 @@ impl State {
     }
 
     pub fn relative_touch_to_logical(
-        &mut self,                
-        relative_pos: Point<f64, Logical>,                           // 0.0 to 1.0
+        &mut self,
+        relative_pos: Point<f64, Logical>, // 0.0 to 1.0
     ) -> Option<Point<f64, Logical>> {
-        let output = self.space
+        let output = self
+            .space
             .outputs()
             .find(|output| output.name().starts_with("eDP"))
             .or_else(|| self.space.outputs().next())?;
@@ -338,7 +344,7 @@ impl State {
         // Map to global logical coordinates
         Some(transformed_pos + output_geometry.loc.to_f64())
     }
-    
+
     pub fn touch_down(
         &mut self,
         event_time_msec: u32,
@@ -351,7 +357,7 @@ impl State {
             .space
             .element_under(location)
             .map(|(w, pos)| (w.clone().into(), pos.to_f64()));
-    
+
         touch.down(
             self,
             under,
@@ -365,14 +371,10 @@ impl State {
         touch.frame(self);
     }
 
-    pub fn touch_up(
-        &mut self,
-        event_time_msec: u32,
-        slot: TouchSlot,
-    ) {
+    pub fn touch_up(&mut self, event_time_msec: u32, slot: TouchSlot) {
         let serial = SERIAL_COUNTER.next_serial();
         let touch = self.seat.get_touch().unwrap();
-    
+
         touch.up(
             self,
             &UpEvent {
@@ -383,7 +385,7 @@ impl State {
         );
         touch.frame(self);
     }
-    
+
     pub fn touch_motion(
         &mut self,
         event_time_msec: u32,
@@ -395,7 +397,7 @@ impl State {
             .space
             .element_under(location)
             .map(|(w, pos)| (w.clone().into(), pos.to_f64()));
-    
+
         touch.motion(
             self,
             under,
@@ -412,7 +414,7 @@ impl State {
         let touch = self.seat.get_touch().unwrap();
         touch.cancel(self);
     }
-    
+
     pub fn touch_frame(&mut self) {
         let touch = self.seat.get_touch().unwrap();
         touch.frame(self);
@@ -424,7 +426,12 @@ impl State {
                 self.keyboard_input(event.time_msec(), event.key_code(), event.state());
             }
             InputEvent::PointerMotion { event, .. } => {
-                self.pointer_motion(event.time_msec(), event.time_usec(), event.delta(), event.delta_unaccel());
+                self.pointer_motion(
+                    event.time_msec(),
+                    event.time_usec(),
+                    event.delta(),
+                    event.delta_unaccel(),
+                );
             }
             InputEvent::PointerMotionAbsolute { event } => {
                 if let Some(output) = self.output.as_ref() {

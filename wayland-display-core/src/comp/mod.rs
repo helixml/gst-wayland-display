@@ -5,44 +5,45 @@ use smithay::backend::input::AxisSource;
 use smithay::backend::input::TouchSlot;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::reexports::gbm::BufferObjectFlags;
+use smithay::wayland::presentation::Refresh;
 use smithay::{
     backend::{
-        allocator::{dmabuf::Dmabuf, Fourcc},
+        allocator::{Fourcc, dmabuf::Dmabuf},
         drm::DrmNode,
         libinput::LibinputInputBackend,
         renderer::{
+            Bind,
             damage::{Error as DTRError, OutputDamageTracker},
             element::memory::{MemoryBuffer, MemoryRenderBuffer},
-            Bind,
         },
     },
     desktop::{
-        utils::{
-            send_frames_surface_tree, surface_presentation_feedback_flags_from_states,
-            surface_primary_scanout_output, update_surface_primary_scanout_output,
-            OutputPresentationFeedback,
-        },
         PopupManager, Space, Window,
+        utils::{
+            OutputPresentationFeedback, send_frames_surface_tree,
+            surface_presentation_feedback_flags_from_states, surface_primary_scanout_output,
+            update_surface_primary_scanout_output,
+        },
     },
-    input::{keyboard::XkbConfig, pointer::CursorImageStatus, Seat, SeatState},
+    input::{Seat, SeatState, keyboard::XkbConfig, pointer::CursorImageStatus},
     output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
+            EventLoop, Interest, LoopHandle, Mode, PostAction,
             channel::{Channel, Event},
             generic::Generic,
             timer::{TimeoutAction, Timer},
-            EventLoop, Interest, LoopHandle, Mode, PostAction,
         },
         input::Libinput,
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
         wayland_server::{
-            backend::{ClientData, ClientId, DisconnectReason, GlobalId},
             Display, DisplayHandle,
+            backend::{ClientData, ClientId, DisconnectReason, GlobalId},
         },
     },
     utils::{Clock, Logical, Monotonic, Physical, Point, Rectangle, Size, Transform},
     wayland::{
-        compositor::{with_states, CompositorClientState, CompositorState},
+        compositor::{CompositorClientState, CompositorState, with_states},
         dmabuf::{DmabufGlobal, DmabufState},
         output::OutputManagerState,
         pointer_constraints::PointerConstraintsState,
@@ -58,10 +59,9 @@ use smithay::{
 use std::{
     collections::HashSet,
     ffi::CString,
-    sync::{mpsc::Sender, Arc},
+    sync::{Arc, mpsc::Sender},
     time::{Duration, Instant},
 };
-use smithay::wayland::presentation::Refresh;
 use tracing::debug;
 
 mod focus;
@@ -72,8 +72,8 @@ pub use self::focus::*;
 pub use self::input::*;
 pub use self::rendering::*;
 use crate::utils::allocator::{
-    gst_video_format_to_drm_fourcc, gst_video_format_to_drm_modifier, new_gbm_device, GsBuffer,
-    GsBufferType, GsDmaBuf, GsGlesbuffer, VideoInfoTypes,
+    GsBuffer, GsBufferType, GsDmaBuf, GsGlesbuffer, VideoInfoTypes, gst_video_format_to_drm_fourcc,
+    gst_video_format_to_drm_modifier, new_gbm_device,
 };
 use crate::utils::renderer::setup_renderer;
 use crate::{utils::RenderTarget, wayland::protocols::wl_drm::create_drm_global};
@@ -488,7 +488,12 @@ pub(crate) fn init(
                 }
                 Event::Msg(Command::PointerMotion(position)) => {
                     let time: Duration = state.clock.now().into();
-                    state.pointer_motion(time.as_millis() as u32, time.as_nanos() as u64, position, position);
+                    state.pointer_motion(
+                        time.as_millis() as u32,
+                        time.as_nanos() as u64,
+                        position,
+                        position,
+                    );
                 }
                 Event::Msg(Command::PointerMotionAbsolute(position)) => {
                     let time: Duration = state.clock.now().into();

@@ -5,12 +5,11 @@ use crate::utils::allocator::GsBuffer;
 use smithay::backend::renderer::gles::GlesError;
 use smithay::{
     backend::renderer::{
+        ImportAll, ImportMem, Renderer,
         damage::{Error as OutputDamageTrackerError, RenderOutputResult},
         element::{
-            memory::MemoryRenderBufferRenderElement, surface::WaylandSurfaceRenderElement, Kind,
-        }
-        ,
-        ImportAll, ImportMem, Renderer,
+            Kind, memory::MemoryRenderBufferRenderElement, surface::WaylandSurfaceRenderElement,
+        },
     },
     desktop::space::render_output,
     input::pointer::CursorImageStatus,
@@ -84,7 +83,11 @@ impl State {
             [0.0, 0.0, 0.0, 1.0],
         )?;
 
-        let buffer = self.output_buffer.clone().unwrap().to_gs_buffer(&mut target, &mut self.renderer);
+        let buffer = self
+            .output_buffer
+            .clone()
+            .unwrap()
+            .to_gs_buffer(&mut target, &mut self.renderer);
 
         Ok((buffer, render_output_result))
     }

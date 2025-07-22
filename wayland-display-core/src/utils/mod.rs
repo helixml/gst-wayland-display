@@ -6,7 +6,7 @@ mod target;
 
 pub use self::target::*;
 
-pub mod tests{
+pub mod tests {
     use std::sync::Once;
     pub static INIT: Once = Once::new();
 

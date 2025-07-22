@@ -1,18 +1,23 @@
-use std::borrow::Cow;
+use crate::comp::State;
 use smithay::{
     backend::input::KeyState,
     desktop::{PopupKind, Window, WindowSurface},
     input::{
-        keyboard::{KeyboardTarget, KeysymHandle, ModifiersState},
-        pointer::{AxisFrame, ButtonEvent, MotionEvent, PointerTarget, RelativeMotionEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent},
-        touch::{DownEvent, OrientationEvent, ShapeEvent, TouchTarget, UpEvent},
         Seat,
+        keyboard::{KeyboardTarget, KeysymHandle, ModifiersState},
+        pointer::{
+            AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent,
+            GesturePinchBeginEvent, GesturePinchEndEvent, GesturePinchUpdateEvent,
+            GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent, MotionEvent,
+            PointerTarget, RelativeMotionEvent,
+        },
+        touch::{DownEvent, OrientationEvent, ShapeEvent, TouchTarget, UpEvent},
     },
     reexports::wayland_server::{backend::ObjectId, protocol::wl_surface::WlSurface},
     utils::{IsAlive, Serial},
     wayland::seat::WaylandFocus,
 };
-use crate::comp::State;
+use std::borrow::Cow;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FocusTarget {
@@ -51,8 +56,10 @@ impl KeyboardTarget<State> for FocusTarget {
     ) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {KeyboardTarget::enter(w.wl_surface(), seat, data, keys, serial)}
-            }
+                WindowSurface::Wayland(w) => {
+                    KeyboardTarget::enter(w.wl_surface(), seat, data, keys, serial)
+                }
+            },
             FocusTarget::Popup(p) => {
                 KeyboardTarget::enter(p.wl_surface(), seat, data, keys, serial)
             }
@@ -62,8 +69,10 @@ impl KeyboardTarget<State> for FocusTarget {
     fn leave(&self, seat: &Seat<State>, data: &mut State, serial: Serial) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {KeyboardTarget::leave(w.wl_surface(), seat, data, serial)}
-            }
+                WindowSurface::Wayland(w) => {
+                    KeyboardTarget::leave(w.wl_surface(), seat, data, serial)
+                }
+            },
             FocusTarget::Popup(p) => KeyboardTarget::leave(p.wl_surface(), seat, data, serial),
         }
     }
@@ -78,10 +87,14 @@ impl KeyboardTarget<State> for FocusTarget {
         time: u32,
     ) {
         match self {
-            FocusTarget::Wayland(w) => match w.underlying_surface(){
-                WindowSurface::Wayland(w) => {KeyboardTarget::key(w.wl_surface(), seat, data, key, state, serial, time)}
+            FocusTarget::Wayland(w) => match w.underlying_surface() {
+                WindowSurface::Wayland(w) => {
+                    KeyboardTarget::key(w.wl_surface(), seat, data, key, state, serial, time)
+                }
             },
-            FocusTarget::Popup(p) => KeyboardTarget::key(p.wl_surface(), seat, data, key, state, serial, time)
+            FocusTarget::Popup(p) => {
+                KeyboardTarget::key(p.wl_surface(), seat, data, key, state, serial, time)
+            }
         }
     }
 
@@ -93,8 +106,10 @@ impl KeyboardTarget<State> for FocusTarget {
         serial: Serial,
     ) {
         match self {
-            FocusTarget::Wayland(w) => match w.underlying_surface(){
-                WindowSurface::Wayland(w) => {KeyboardTarget::modifiers(w.wl_surface(), seat, data, modifiers, serial)}
+            FocusTarget::Wayland(w) => match w.underlying_surface() {
+                WindowSurface::Wayland(w) => {
+                    KeyboardTarget::modifiers(w.wl_surface(), seat, data, modifiers, serial)
+                }
             },
             FocusTarget::Popup(p) => p.wl_surface().modifiers(seat, data, modifiers, serial),
         }
@@ -104,8 +119,10 @@ impl KeyboardTarget<State> for FocusTarget {
 impl PointerTarget<State> for FocusTarget {
     fn enter(&self, seat: &Seat<State>, data: &mut State, event: &MotionEvent) {
         match self {
-            FocusTarget::Wayland(w) => match w.underlying_surface(){
-                WindowSurface::Wayland(w) => {PointerTarget::enter(w.wl_surface(), seat, data, event)}
+            FocusTarget::Wayland(w) => match w.underlying_surface() {
+                WindowSurface::Wayland(w) => {
+                    PointerTarget::enter(w.wl_surface(), seat, data, event)
+                }
             },
             FocusTarget::Popup(p) => PointerTarget::enter(p.wl_surface(), seat, data, event),
         }
@@ -113,31 +130,34 @@ impl PointerTarget<State> for FocusTarget {
 
     fn motion(&self, seat: &Seat<State>, data: &mut State, event: &MotionEvent) {
         match self {
-            FocusTarget::Wayland(w) => match w.underlying_surface(){
-                WindowSurface::Wayland(w) => {PointerTarget::motion(w.wl_surface(), seat, data, event)}
+            FocusTarget::Wayland(w) => match w.underlying_surface() {
+                WindowSurface::Wayland(w) => {
+                    PointerTarget::motion(w.wl_surface(), seat, data, event)
+                }
             },
             FocusTarget::Popup(p) => PointerTarget::motion(p.wl_surface(), seat, data, event),
         }
     }
 
-    fn relative_motion(
-        &self,
-        seat: &Seat<State>,
-        data: &mut State,
-        event: &RelativeMotionEvent,
-    ) {
+    fn relative_motion(&self, seat: &Seat<State>, data: &mut State, event: &RelativeMotionEvent) {
         match self {
-            FocusTarget::Wayland(w) => match w.underlying_surface(){
-                WindowSurface::Wayland(w) => {PointerTarget::relative_motion(w.wl_surface(), seat, data, event)}
+            FocusTarget::Wayland(w) => match w.underlying_surface() {
+                WindowSurface::Wayland(w) => {
+                    PointerTarget::relative_motion(w.wl_surface(), seat, data, event)
+                }
             },
-            FocusTarget::Popup(p) => PointerTarget::relative_motion(p.wl_surface(), seat, data, event),
+            FocusTarget::Popup(p) => {
+                PointerTarget::relative_motion(p.wl_surface(), seat, data, event)
+            }
         }
     }
 
     fn button(&self, seat: &Seat<State>, data: &mut State, event: &ButtonEvent) {
         match self {
-            FocusTarget::Wayland(w) => match w.underlying_surface(){
-                WindowSurface::Wayland(w) => {PointerTarget::button(w.wl_surface(), seat, data, event)}
+            FocusTarget::Wayland(w) => match w.underlying_surface() {
+                WindowSurface::Wayland(w) => {
+                    PointerTarget::button(w.wl_surface(), seat, data, event)
+                }
             },
             FocusTarget::Popup(p) => PointerTarget::button(p.wl_surface(), seat, data, event),
         }
@@ -145,8 +165,8 @@ impl PointerTarget<State> for FocusTarget {
 
     fn axis(&self, seat: &Seat<State>, data: &mut State, frame: AxisFrame) {
         match self {
-            FocusTarget::Wayland(w) => match w.underlying_surface(){
-                WindowSurface::Wayland(w) => {PointerTarget::axis(w.wl_surface(), seat, data, frame)}
+            FocusTarget::Wayland(w) => match w.underlying_surface() {
+                WindowSurface::Wayland(w) => PointerTarget::axis(w.wl_surface(), seat, data, frame),
             },
             FocusTarget::Popup(p) => PointerTarget::axis(p.wl_surface(), seat, data, frame),
         }
@@ -155,88 +175,157 @@ impl PointerTarget<State> for FocusTarget {
     fn frame(&self, seat: &Seat<State>, data: &mut State) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {PointerTarget::frame(w.wl_surface(), seat, data)}
+                WindowSurface::Wayland(w) => PointerTarget::frame(w.wl_surface(), seat, data),
             },
-            FocusTarget::Popup(p) => { PointerTarget::frame(p.wl_surface(), seat, data) }
+            FocusTarget::Popup(p) => PointerTarget::frame(p.wl_surface(), seat, data),
         }
     }
 
-    fn gesture_swipe_begin(&self, seat: &Seat<State>, data: &mut State, event: &GestureSwipeBeginEvent) {
+    fn gesture_swipe_begin(
+        &self,
+        seat: &Seat<State>,
+        data: &mut State,
+        event: &GestureSwipeBeginEvent,
+    ) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {PointerTarget::gesture_swipe_begin(w.wl_surface(), seat, data, event)}
+                WindowSurface::Wayland(w) => {
+                    PointerTarget::gesture_swipe_begin(w.wl_surface(), seat, data, event)
+                }
             },
-            FocusTarget::Popup(p) => PointerTarget::gesture_swipe_begin(p.wl_surface(), seat, data, event)
+            FocusTarget::Popup(p) => {
+                PointerTarget::gesture_swipe_begin(p.wl_surface(), seat, data, event)
+            }
         }
     }
 
-    fn gesture_swipe_update(&self, seat: &Seat<State>, data: &mut State, event: &GestureSwipeUpdateEvent) {
+    fn gesture_swipe_update(
+        &self,
+        seat: &Seat<State>,
+        data: &mut State,
+        event: &GestureSwipeUpdateEvent,
+    ) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {PointerTarget::gesture_swipe_update(w.wl_surface(), seat, data, event)}
+                WindowSurface::Wayland(w) => {
+                    PointerTarget::gesture_swipe_update(w.wl_surface(), seat, data, event)
+                }
             },
-            FocusTarget::Popup(p) => PointerTarget::gesture_swipe_update(p.wl_surface(), seat, data, event)
+            FocusTarget::Popup(p) => {
+                PointerTarget::gesture_swipe_update(p.wl_surface(), seat, data, event)
+            }
         }
     }
 
-    fn gesture_swipe_end(&self, seat: &Seat<State>, data: &mut State, event: &GestureSwipeEndEvent) {
+    fn gesture_swipe_end(
+        &self,
+        seat: &Seat<State>,
+        data: &mut State,
+        event: &GestureSwipeEndEvent,
+    ) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {PointerTarget::gesture_swipe_end(w.wl_surface(), seat, data, event)}
+                WindowSurface::Wayland(w) => {
+                    PointerTarget::gesture_swipe_end(w.wl_surface(), seat, data, event)
+                }
             },
-            FocusTarget::Popup(p) => PointerTarget::gesture_swipe_end(p.wl_surface(), seat, data, event)
+            FocusTarget::Popup(p) => {
+                PointerTarget::gesture_swipe_end(p.wl_surface(), seat, data, event)
+            }
         }
     }
 
-    fn gesture_pinch_begin(&self, seat: &Seat<State>, data: &mut State, event: &GesturePinchBeginEvent) {
+    fn gesture_pinch_begin(
+        &self,
+        seat: &Seat<State>,
+        data: &mut State,
+        event: &GesturePinchBeginEvent,
+    ) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {PointerTarget::gesture_pinch_begin(w.wl_surface(), seat, data, event)}
+                WindowSurface::Wayland(w) => {
+                    PointerTarget::gesture_pinch_begin(w.wl_surface(), seat, data, event)
+                }
             },
-            FocusTarget::Popup(p) => PointerTarget::gesture_pinch_begin(p.wl_surface(), seat, data, event)
+            FocusTarget::Popup(p) => {
+                PointerTarget::gesture_pinch_begin(p.wl_surface(), seat, data, event)
+            }
         }
     }
 
-    fn gesture_pinch_update(&self, seat: &Seat<State>, data: &mut State, event: &GesturePinchUpdateEvent) {
+    fn gesture_pinch_update(
+        &self,
+        seat: &Seat<State>,
+        data: &mut State,
+        event: &GesturePinchUpdateEvent,
+    ) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {PointerTarget::gesture_pinch_update(w.wl_surface(), seat, data, event)}
+                WindowSurface::Wayland(w) => {
+                    PointerTarget::gesture_pinch_update(w.wl_surface(), seat, data, event)
+                }
             },
-            FocusTarget::Popup(p) => PointerTarget::gesture_pinch_update(p.wl_surface(), seat, data, event)
+            FocusTarget::Popup(p) => {
+                PointerTarget::gesture_pinch_update(p.wl_surface(), seat, data, event)
+            }
         }
     }
 
-    fn gesture_pinch_end(&self, seat: &Seat<State>, data: &mut State, event: &GesturePinchEndEvent) {
+    fn gesture_pinch_end(
+        &self,
+        seat: &Seat<State>,
+        data: &mut State,
+        event: &GesturePinchEndEvent,
+    ) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {PointerTarget::gesture_pinch_end(w.wl_surface(), seat, data, event)}
+                WindowSurface::Wayland(w) => {
+                    PointerTarget::gesture_pinch_end(w.wl_surface(), seat, data, event)
+                }
             },
-            FocusTarget::Popup(p) => PointerTarget::gesture_pinch_end(p.wl_surface(), seat, data, event)
+            FocusTarget::Popup(p) => {
+                PointerTarget::gesture_pinch_end(p.wl_surface(), seat, data, event)
+            }
         }
     }
 
-    fn gesture_hold_begin(&self, seat: &Seat<State>, data: &mut State, event: &GestureHoldBeginEvent) {
+    fn gesture_hold_begin(
+        &self,
+        seat: &Seat<State>,
+        data: &mut State,
+        event: &GestureHoldBeginEvent,
+    ) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {PointerTarget::gesture_hold_begin(w.wl_surface(), seat, data, event)}
+                WindowSurface::Wayland(w) => {
+                    PointerTarget::gesture_hold_begin(w.wl_surface(), seat, data, event)
+                }
             },
-            FocusTarget::Popup(p) => PointerTarget::gesture_hold_begin(p.wl_surface(), seat, data, event)
+            FocusTarget::Popup(p) => {
+                PointerTarget::gesture_hold_begin(p.wl_surface(), seat, data, event)
+            }
         }
     }
 
     fn gesture_hold_end(&self, seat: &Seat<State>, data: &mut State, event: &GestureHoldEndEvent) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {PointerTarget::gesture_hold_end(w.wl_surface(), seat, data, event)}
+                WindowSurface::Wayland(w) => {
+                    PointerTarget::gesture_hold_end(w.wl_surface(), seat, data, event)
+                }
             },
-            FocusTarget::Popup(p) => PointerTarget::gesture_hold_end(p.wl_surface(), seat, data, event)
+            FocusTarget::Popup(p) => {
+                PointerTarget::gesture_hold_end(p.wl_surface(), seat, data, event)
+            }
         }
     }
 
     fn leave(&self, seat: &Seat<State>, data: &mut State, serial: Serial, time: u32) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {PointerTarget::leave(w.wl_surface(), seat, data, serial, time)}
+                WindowSurface::Wayland(w) => {
+                    PointerTarget::leave(w.wl_surface(), seat, data, serial, time)
+                }
             },
             FocusTarget::Popup(p) => PointerTarget::leave(p.wl_surface(), seat, data, serial, time),
         }
@@ -259,67 +348,91 @@ impl WaylandFocus for FocusTarget {
     }
 }
 
-impl TouchTarget<State> for FocusTarget{
+impl TouchTarget<State> for FocusTarget {
     fn down(&self, seat: &Seat<State>, data: &mut State, event: &DownEvent, seq: Serial) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {TouchTarget::down(w.wl_surface(), seat, data, event, seq)}
-            }
-            FocusTarget::Popup(p) => {TouchTarget::down(p.wl_surface(), seat, data, event, seq)}
+                WindowSurface::Wayland(w) => {
+                    TouchTarget::down(w.wl_surface(), seat, data, event, seq)
+                }
+            },
+            FocusTarget::Popup(p) => TouchTarget::down(p.wl_surface(), seat, data, event, seq),
         }
     }
 
     fn up(&self, seat: &Seat<State>, data: &mut State, event: &UpEvent, seq: Serial) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {TouchTarget::up(w.wl_surface(), seat, data, event, seq)}
-            }
-            FocusTarget::Popup(p) => {TouchTarget::up(p.wl_surface(), seat, data, event, seq)}
+                WindowSurface::Wayland(w) => {
+                    TouchTarget::up(w.wl_surface(), seat, data, event, seq)
+                }
+            },
+            FocusTarget::Popup(p) => TouchTarget::up(p.wl_surface(), seat, data, event, seq),
         }
     }
 
-    fn motion(&self, seat: &Seat<State>, data: &mut State, event: &smithay::input::touch::MotionEvent, seq: Serial) {
+    fn motion(
+        &self,
+        seat: &Seat<State>,
+        data: &mut State,
+        event: &smithay::input::touch::MotionEvent,
+        seq: Serial,
+    ) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {TouchTarget::motion(w.wl_surface(), seat, data, event, seq)}
-            }
-            FocusTarget::Popup(p) => {TouchTarget::motion(p.wl_surface(), seat, data, event, seq)}
+                WindowSurface::Wayland(w) => {
+                    TouchTarget::motion(w.wl_surface(), seat, data, event, seq)
+                }
+            },
+            FocusTarget::Popup(p) => TouchTarget::motion(p.wl_surface(), seat, data, event, seq),
         }
     }
 
     fn frame(&self, seat: &Seat<State>, data: &mut State, seq: Serial) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {TouchTarget::frame(w.wl_surface(), seat, data, seq)}
-            }
-            FocusTarget::Popup(p) => {TouchTarget::frame(p.wl_surface(), seat, data, seq)}
+                WindowSurface::Wayland(w) => TouchTarget::frame(w.wl_surface(), seat, data, seq),
+            },
+            FocusTarget::Popup(p) => TouchTarget::frame(p.wl_surface(), seat, data, seq),
         }
     }
 
     fn cancel(&self, seat: &Seat<State>, data: &mut State, seq: Serial) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {TouchTarget::cancel(w.wl_surface(), seat, data, seq)}
-            }
-            FocusTarget::Popup(p) => {TouchTarget::cancel(p.wl_surface(), seat, data, seq)}
+                WindowSurface::Wayland(w) => TouchTarget::cancel(w.wl_surface(), seat, data, seq),
+            },
+            FocusTarget::Popup(p) => TouchTarget::cancel(p.wl_surface(), seat, data, seq),
         }
     }
 
     fn shape(&self, seat: &Seat<State>, data: &mut State, event: &ShapeEvent, seq: Serial) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {TouchTarget::shape(w.wl_surface(), seat, data, event, seq)}
-            }
-            FocusTarget::Popup(p) => {TouchTarget::shape(p.wl_surface(), seat, data, event, seq)}
+                WindowSurface::Wayland(w) => {
+                    TouchTarget::shape(w.wl_surface(), seat, data, event, seq)
+                }
+            },
+            FocusTarget::Popup(p) => TouchTarget::shape(p.wl_surface(), seat, data, event, seq),
         }
     }
 
-    fn orientation(&self, seat: &Seat<State>, data: &mut State, event: &OrientationEvent, seq: Serial) {
+    fn orientation(
+        &self,
+        seat: &Seat<State>,
+        data: &mut State,
+        event: &OrientationEvent,
+        seq: Serial,
+    ) {
         match self {
             FocusTarget::Wayland(w) => match w.underlying_surface() {
-                WindowSurface::Wayland(w) => {TouchTarget::orientation(w.wl_surface(), seat, data, event, seq)}
+                WindowSurface::Wayland(w) => {
+                    TouchTarget::orientation(w.wl_surface(), seat, data, event, seq)
+                }
+            },
+            FocusTarget::Popup(p) => {
+                TouchTarget::orientation(p.wl_surface(), seat, data, event, seq)
             }
-            FocusTarget::Popup(p) => {TouchTarget::orientation(p.wl_surface(), seat, data, event, seq)}
         }
     }
 }

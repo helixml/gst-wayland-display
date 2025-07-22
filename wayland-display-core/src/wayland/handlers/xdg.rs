@@ -1,10 +1,10 @@
 use smithay::{
     delegate_xdg_shell,
     desktop::{
-        find_popup_root_surface, get_popup_toplevel_coords, PopupKeyboardGrab, PopupKind,
-        PopupPointerGrab, PopupUngrabStrategy, Window,
+        PopupKeyboardGrab, PopupKind, PopupPointerGrab, PopupUngrabStrategy, Window,
+        find_popup_root_surface, get_popup_toplevel_coords,
     },
-    input::{pointer::Focus, Seat},
+    input::{Seat, pointer::Focus},
     reexports::wayland_server::protocol::wl_seat::WlSeat,
     utils::Serial,
     wayland::{

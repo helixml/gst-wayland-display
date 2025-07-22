@@ -1,4 +1,4 @@
-use crate::{DrmModifier};
+use crate::DrmModifier;
 use gst::Buffer as GstBuffer;
 use gst_video::{VideoFormat, VideoInfo, VideoInfoDmaDrm, VideoMeta};
 use gstreamer_allocators::{DmaBufAllocator, FdMemoryFlags};
@@ -10,7 +10,7 @@ use smithay::backend::renderer::gles::{GlesError, GlesRenderbuffer, GlesRenderer
 use smithay::backend::renderer::{Bind, ExportMem, Offscreen, Renderer};
 use smithay::reexports::drm::buffer::DrmFourcc;
 use smithay::reexports::gbm::Modifier;
-use smithay::reexports::rustix::fs::{seek, SeekFrom};
+use smithay::reexports::rustix::fs::{SeekFrom, seek};
 use smithay::utils::{DeviceFd, Rectangle};
 use std::fs::File;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
@@ -138,10 +138,7 @@ pub trait GsBuffer<R: Renderer> {
 }
 
 impl GsBuffer<GlesRenderer> for GsBufferType {
-    fn bind(
-        &mut self,
-        renderer: &mut GlesRenderer,
-    ) -> Result<GlesTarget, GlesError> {
+    fn bind(&mut self, renderer: &mut GlesRenderer) -> Result<GlesTarget, GlesError> {
         match self {
             GsBufferType::RAW(buffer) => renderer.bind(&mut buffer.buffer),
             GsBufferType::DMA(buffer) => renderer.bind(&mut buffer.buffer),
@@ -158,7 +155,8 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
                             (
                                 buffer.video_info.width() as i32,
                                 buffer.video_info.height() as i32,
-                            ).into(),
+                            )
+                                .into(),
                         ),
                         buffer.format,
                     )
@@ -326,7 +324,6 @@ mod tests {
     use smithay::backend::renderer::Frame;
     use smithay::utils::Transform;
 
-
     enum BufferData {
         RAW {
             video_info: VideoInfo,
@@ -359,14 +356,13 @@ mod tests {
                     .map_texture(&mapping)
                     .expect("Failed to download framebuffer");
 
-                let mut gst_buffer = GstBuffer::with_size(map.len()).expect("Failed to create buffer");
+                let mut gst_buffer =
+                    GstBuffer::with_size(map.len()).expect("Failed to create buffer");
                 {
                     let gst_buffer = gst_buffer.get_mut().unwrap();
-                    let mut vframe = gst_video::VideoFrameRef::from_buffer_ref_writable(
-                        gst_buffer,
-                        &video_info,
-                    )
-                        .unwrap();
+                    let mut vframe =
+                        gst_video::VideoFrameRef::from_buffer_ref_writable(gst_buffer, &video_info)
+                            .unwrap();
                     let plane_data = vframe.plane_data_mut(0).unwrap();
                     plane_data.clone_from_slice(map);
                 }
@@ -382,9 +378,9 @@ mod tests {
                     let video_format = match VideoFormat::from_fourcc(buffer.format().code as u32) {
                         VideoFormat::Unknown => {
                             tracing::debug!(
-                            "Failed to convert fourcc to video format: {:?}",
-                            buffer.format().code
-                        );
+                                "Failed to convert fourcc to video format: {:?}",
+                                buffer.format().code
+                            );
                             VideoFormat::Bgrx // Fallback
                         }
                         format => format,
@@ -395,9 +391,9 @@ mod tests {
                         video_info.width(),
                         video_info.height(),
                     )
-                        .build()
-                        .unwrap()
-                        .size();
+                    .build()
+                    .unwrap()
+                    .size();
 
                     let gst_buffer = gst_buffer.get_mut().unwrap();
                     buffer.handles().for_each(|handle| {

@@ -3,7 +3,7 @@ use smithay::delegate_pointer_constraints;
 use smithay::input::pointer::PointerHandle;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point};
-use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraintsHandler};
+use smithay::wayland::pointer_constraints::{PointerConstraintsHandler, with_pointer_constraint};
 use smithay::wayland::seat::WaylandFocus;
 
 impl PointerConstraintsHandler for State {
@@ -19,13 +19,24 @@ impl PointerConstraintsHandler for State {
         }
     }
 
-    fn cursor_position_hint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>, location: Point<f64, Logical>) {
+    fn cursor_position_hint(
+        &mut self,
+        surface: &WlSurface,
+        pointer: &PointerHandle<Self>,
+        location: Point<f64, Logical>,
+    ) {
         if with_pointer_constraint(surface, pointer, |constraint| {
             constraint.is_some_and(|c| c.is_active())
         }) {
-            let origin = self.space.elements().find_map(|window| {
-                (window.wl_surface().as_deref() == Some(surface)).then(|| window.geometry())
-            }).unwrap_or_default().loc.to_f64();
+            let origin = self
+                .space
+                .elements()
+                .find_map(|window| {
+                    (window.wl_surface().as_deref() == Some(surface)).then(|| window.geometry())
+                })
+                .unwrap_or_default()
+                .loc
+                .to_f64();
 
             pointer.set_location(origin + location);
         }

@@ -1,11 +1,11 @@
 use gst::ffi::GstBuffer;
+use gst::glib::translate::FromGlibPtrNone;
 use gst_video::ffi::GstVideoInfo;
 use gst_video::VideoInfo;
-use gst::glib::translate::FromGlibPtrNone;
 use std::ffi::{c_char, c_uint, c_void, CStr};
 use std::ptr;
-use waylanddisplaycore::{Tracer, WaylandDisplay};
 use tracing_subscriber;
+use waylanddisplaycore::{Tracer, WaylandDisplay};
 
 #[no_mangle]
 pub extern "C" fn display_init(render_node: *const c_char) -> *mut WaylandDisplay {
@@ -31,7 +31,11 @@ pub extern "C" fn display_init(render_node: *const c_char) -> *mut WaylandDispla
 }
 
 #[no_mangle]
-pub extern "C" fn display_set_trace_fn(wd: *mut WaylandDisplay, trace_start: extern "C" fn(*const c_char) -> *mut c_void, trace_end: extern "C" fn(*mut c_void)) {
+pub extern "C" fn display_set_trace_fn(
+    wd: *mut WaylandDisplay,
+    trace_start: extern "C" fn(*const c_char) -> *mut c_void,
+    trace_end: extern "C" fn(*mut c_void),
+) {
     let display = unsafe { &mut *wd };
     display.tracer = Some(Tracer::new(trace_start, trace_end));
 }
@@ -151,7 +155,12 @@ pub extern "C" fn display_touch_up(dpy: *mut WaylandDisplay, id: c_uint) {
 }
 
 #[no_mangle]
-pub extern "C" fn display_touch_motion(dpy: *mut WaylandDisplay, id: c_uint, rel_x: f64, rel_y: f64) {
+pub extern "C" fn display_touch_motion(
+    dpy: *mut WaylandDisplay,
+    id: c_uint,
+    rel_x: f64,
+    rel_y: f64,
+) {
     let display = unsafe { &mut *dpy };
     display.touch_motion(id, rel_x, rel_y);
 }
@@ -173,7 +182,7 @@ pub extern "C" fn display_get_frame(dpy: *mut WaylandDisplay) -> *mut GstBuffer 
     let display = unsafe { &mut *dpy };
     let _span = match display.tracer.as_ref() {
         Some(tracer) => Some(tracer.trace("display_get_frame")),
-        None => None
+        None => None,
     };
     match display.frame() {
         Ok(mut frame) => {
