@@ -25,7 +25,7 @@ gstreamer-allocators = {version = "0.23.2", package = "gstreamer-allocators", fe
 tracing-subscriber = "0.3.18"
 
 [dependencies.smithay]
-git = "https://github.com/Smithay/smithay"
+git = "https://github.com/games-on-whales/smithay"
 rev = "a166cf4c94b5aedc332a65aa1dd753e8148829c3"
 default-features = false
 features = [
