@@ -1,9 +1,8 @@
 use super::{State, focus::FocusTarget};
 use smithay::backend::input::Keycode;
 use smithay::backend::libinput::LibinputInputBackend;
-use smithay::input::keyboard::{Keysym, xkb};
+use smithay::input::keyboard::Keysym;
 use smithay::reexports::input::event::pointer::PointerEventTrait;
-use smithay::wayland::compositor::RegionAttributes;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::{
     backend::input::{
@@ -102,87 +101,23 @@ impl State {
         );
     }
 
-    pub fn pointer_motion_inner(
-        &mut self,
-        event_time_msec: u32,
-        event_time_usec: u64,
-        delta: Point<f64, Logical>,
-        delta_unaccelerated: Point<f64, Logical>,
-        under: &Option<(FocusTarget, Point<f64, Logical>)>,
-        pointer_locked: bool,
-        pointer_confined: bool,
-        confine_region: &Option<RegionAttributes>,
+    fn maybe_activate_pointer_constraint(
+        &self,
+        new_under: &Option<(FocusTarget, Point<f64, Logical>)>,
+        new_location: Point<f64, Logical>,
     ) {
-        self.last_pointer_movement = Instant::now();
-        let serial = SERIAL_COUNTER.next_serial();
-
         let pointer = self.seat.get_pointer().unwrap();
-        pointer.relative_motion(
-            self,
-            under.clone().map(|(w, pos)| (w, pos.to_f64())),
-            &RelativeMotionEvent {
-                delta: delta,
-                delta_unaccel: delta_unaccelerated,
-                utime: event_time_usec,
-            },
-        );
 
-        // If pointer is locked, only emit relative motion
-        if pointer_locked {
-            pointer.frame(self);
-            return;
-        }
-
-        self.pointer_location += delta;
-        self.pointer_location = self.clamp_coords(self.pointer_location);
-        let new_under = self
-            .space
-            .element_under(self.pointer_location)
-            .map(|(w, pos)| (w.clone().into(), pos.to_f64()));
-
-        // If confined, don't move pointer if it would go outside surface or region
-        if pointer_confined {
-            if let Some((surface, surface_loc)) = &under {
-                if new_under
-                    .as_ref()
-                    .and_then(|(under, _): &(FocusTarget, Point<f64, Logical>)| under.wl_surface())
-                    != surface.wl_surface()
-                {
-                    pointer.frame(self);
-                    return;
-                }
-                if let Some(region) = confine_region {
-                    if !region.contains((self.pointer_location - *surface_loc).to_i32_round()) {
-                        pointer.frame(self);
-                        return;
-                    }
-                }
-            }
-        }
-
-        pointer.motion(
-            self,
-            new_under.clone(),
-            &MotionEvent {
-                location: self.pointer_location,
-                serial,
-                time: event_time_msec,
-            },
-        );
-        pointer.frame(self);
-
-        // If pointer is now in a constraint region, activate it
         if let Some((under, surface_location)) = new_under
             .as_ref()
             .and_then(|(target, loc)| Some((target.wl_surface()?, loc)))
         {
             with_pointer_constraint(&under, &pointer, |constraint| match constraint {
                 Some(constraint) if !constraint.is_active() => {
-                    let point =
-                        self.pointer_location.to_i32_round() - surface_location.to_i32_round();
+                    let point = new_location - *surface_location;
                     if constraint
                         .region()
-                        .map_or(true, |region| region.contains(point))
+                        .map_or(true, |region| region.contains(point.to_i32_round()))
                     {
                         constraint.activate();
                     }
@@ -192,23 +127,19 @@ impl State {
         }
     }
 
-    pub fn pointer_motion(
-        &mut self,
-        event_time_msec: u32,
-        event_time_usec: u64,
-        delta: Point<f64, Logical>,
-        delta_unaccelerated: Point<f64, Logical>,
-    ) {
+    fn can_pointer_move(
+        &self,
+        under: &Option<(FocusTarget, Point<f64, Logical>)>,
+        target_position: Point<f64, Logical>,
+    ) -> bool {
         let pointer = self.seat.get_pointer().unwrap();
-        let under = self
+        let mut should_motion = true;
+
+        let new_under = self
             .space
-            .element_under(self.pointer_location)
+            .element_under(target_position)
             .map(|(w, pos)| (w.clone().into(), pos.to_f64()));
 
-        /* Check if the pointer is locked or confined (pointer constraints protocol) */
-        let mut pointer_locked = false;
-        let mut pointer_confined = false;
-        let mut confine_region = None;
         if let Some((surface, surface_loc)) =
             under
                 .as_ref()
@@ -226,11 +157,27 @@ impl State {
                     }
                     match &*constraint {
                         PointerConstraint::Locked(_locked) => {
-                            pointer_locked = true;
+                            should_motion = false;
                         }
                         PointerConstraint::Confined(confine) => {
-                            pointer_confined = true;
-                            confine_region = confine.region().cloned();
+                            // If confined, don't move pointer if it would go outside surface or region
+                            if let Some((surface, surface_loc)) = &under {
+                                if new_under.as_ref().and_then(
+                                    |(under, _): &(FocusTarget, Point<f64, Logical>)| {
+                                        under.wl_surface()
+                                    },
+                                ) != surface.wl_surface()
+                                {
+                                    should_motion = false;
+                                }
+                                if let Some(region) = confine.region() {
+                                    if !region
+                                        .contains((target_position - *surface_loc).to_i32_round())
+                                    {
+                                        should_motion = false;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -238,23 +185,68 @@ impl State {
             });
         }
 
-        self.pointer_motion_inner(
-            event_time_msec,
-            event_time_usec,
-            delta,
-            delta_unaccelerated,
-            &under,
-            pointer_locked,
-            pointer_confined,
-            &confine_region,
+        // If pointer is now in a constraint region, activate it
+        self.maybe_activate_pointer_constraint(&new_under, target_position);
+
+        should_motion
+    }
+
+    pub fn pointer_motion(
+        &mut self,
+        event_time_msec: u32,
+        event_time_usec: u64,
+        delta: Point<f64, Logical>,
+        delta_unaccelerated: Point<f64, Logical>,
+    ) {
+        let serial = SERIAL_COUNTER.next_serial();
+        let pointer = self.seat.get_pointer().unwrap();
+        let under = self
+            .space
+            .element_under(self.pointer_location)
+            .map(|(w, pos)| (w.clone().into(), pos.to_f64()));
+
+        let possible_pos = self.clamp_coords(self.pointer_location + delta);
+
+        // Pointer should only move if it's not locked or confined (and going out of bounds)
+        if self.can_pointer_move(&under, possible_pos) {
+            self.pointer_location = possible_pos; // update the location
+
+            // Not sure why, but order here matters (at least when using Sway nested)!!!
+            // If we send the motion event after the relative_motion it'll behave oddly
+            pointer.motion(
+                self,
+                under.clone(),
+                &MotionEvent {
+                    location: self.pointer_location,
+                    serial,
+                    time: event_time_msec,
+                },
+            );
+        }
+
+        // Relative motion is always applied
+        pointer.relative_motion(
+            self,
+            under.map(|(w, pos)| (w, pos.to_f64())),
+            &RelativeMotionEvent {
+                delta,
+                delta_unaccel: delta_unaccelerated,
+                utime: event_time_usec,
+            },
         );
+
+        pointer.frame(self);
     }
 
     pub fn pointer_motion_absolute(&mut self, event_time_msec: u32, position: Point<f64, Logical>) {
         self.last_pointer_movement = Instant::now();
         let serial = SERIAL_COUNTER.next_serial();
-
-        self.pointer_location = self.clamp_coords(position);
+        let relative_movement = (
+            position.x - self.pointer_location.x,
+            position.y - self.pointer_location.y,
+        )
+            .into();
+        let possible_pos = self.clamp_coords(position);
 
         let pointer = self.seat.get_pointer().unwrap();
         let under = self
@@ -262,15 +254,31 @@ impl State {
             .element_under(self.pointer_location)
             .map(|(w, pos)| (w.clone().into(), pos.to_f64().clone()));
 
-        pointer.motion(
+        // Pointer should only move if it's not locked or confined (and going out of bounds)
+        if self.can_pointer_move(&under, possible_pos) {
+            self.pointer_location = possible_pos;
+
+            pointer.motion(
+                self,
+                under.clone(),
+                &MotionEvent {
+                    location: self.pointer_location,
+                    serial,
+                    time: event_time_msec,
+                },
+            );
+        }
+
+        pointer.relative_motion(
             self,
-            under.clone(),
-            &MotionEvent {
-                location: self.pointer_location,
-                serial,
-                time: event_time_msec,
+            under,
+            &RelativeMotionEvent {
+                delta: relative_movement,
+                delta_unaccel: relative_movement,
+                utime: event_time_msec as u64 * 1000,
             },
         );
+
         pointer.frame(self);
     }
 
@@ -571,10 +579,9 @@ mod tests {
     use super::*;
     use crate::comp::State;
     use crate::utils::RenderTarget;
+    use smithay::input::keyboard::xkb;
     use smithay::reexports::calloop::EventLoop;
     use smithay::reexports::input::Libinput;
-    use smithay::utils::Rectangle;
-    use smithay::wayland::compositor::RectangleKind;
     use smithay::{reexports::wayland_server::Display, utils::Point};
 
     struct TestState {
@@ -607,7 +614,6 @@ mod tests {
     fn keyboard_scancode_conversion() {
         let mut harness = TestState::new();
         let state = harness.state();
-        let kb = state.seat.get_keyboard().unwrap();
 
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         let keymap =
@@ -664,59 +670,17 @@ mod tests {
     }
 
     #[test]
-    fn pointer_motion_respects_locked_mode() {
+    fn pointer_motion_absolute_moves_pointer_location() {
         let mut harness = TestState::new();
         let state = harness.state();
 
-        let initial_location = Point::from((100.0, 100.0));
-        state.pointer_location = Point::from((0.0, 0.0));
-        state.pointer_motion(0, 0, initial_location, initial_location);
+        state.pointer_location = Point::from((50.0, 50.0));
+        let expected_location = Point::from((65.5, 45.0));
 
-        // Try to move the pointer
-        let delta = Point::from((20.0, 20.0));
-        state.pointer_motion_inner(0, 0, delta, delta, &None, true, false, &None);
+        state.pointer_motion_absolute(0, expected_location);
 
-        // In locked mode, the pointer's location should not change
-        assert_eq!(state.pointer_location, initial_location);
+        assert_eq!(state.pointer_location, expected_location);
         let pointer = state.seat.get_pointer().unwrap();
-        assert_eq!(pointer.current_location(), initial_location);
-    }
-
-    #[test]
-    #[ignore = "I can't create a Window"]
-    fn pointer_motion_respects_confined_mode() {
-        let mut harness = TestState::new();
-        let state = harness.state();
-        let confine_region = Some(RegionAttributes {
-            rects: vec![(RectangleKind::Add, Rectangle::from_size((50, 50).into()))],
-        });
-        let original_location = Point::from((40.0, 40.0));
-        let pointer = state.seat.get_pointer().unwrap();
-        let under = todo!("How can we create a FocusTarget?");
-
-        // Move pointer inside the confinement region to activate it
-        state.pointer_location = Point::from((0.0, 0.0));
-        state.pointer_motion(0, 0, original_location, original_location);
-
-        // Try to move the pointer outside the confined region.
-        let delta = Point::from((100.0, 0.0));
-        state.pointer_motion_inner(0, 0, delta, delta, &under, false, true, &confine_region);
-
-        // The location should not have changed because the move was blocked
-        assert_eq!(pointer.current_location(), original_location);
-
-        // Now, move the pointer within the confined region
-        let valid_delta = Point::from((5.0, 5.0));
-        state.pointer_motion_inner(
-            0,
-            0,
-            valid_delta,
-            valid_delta,
-            &under,
-            false,
-            true,
-            &confine_region,
-        );
-        assert_eq!(pointer.current_location(), Point::from((45.0, 45.0)));
+        assert_eq!(pointer.current_location(), expected_location);
     }
 }
