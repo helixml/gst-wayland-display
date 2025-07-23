@@ -499,9 +499,10 @@ pub(crate) fn init(
                 Event::Msg(Command::Quit) | Event::Closed => {
                     state.should_quit = true;
                 }
-                Event::Msg(Command::KeyboardInput(keycode, key_state)) => {
+                Event::Msg(Command::KeyboardInput(scancode, key_state)) => {
                     let time: Duration = state.clock.now().into();
-                    state.keyboard_input(time.as_millis() as u32, keycode.into(), key_state);
+                    let keycode = state.scancode_to_keycode(scancode);
+                    state.keyboard_input(time.as_millis() as u32, keycode, key_state);
                 }
                 Event::Msg(Command::PointerMotion(position)) => {
                     let time: Duration = state.clock.now().into();

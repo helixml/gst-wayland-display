@@ -1,7 +1,7 @@
 use super::{State, focus::FocusTarget};
 use smithay::backend::input::Keycode;
 use smithay::backend::libinput::LibinputInputBackend;
-use smithay::input::keyboard::Keysym;
+use smithay::input::keyboard::{Keysym, xkb};
 use smithay::reexports::input::event::pointer::PointerEventTrait;
 use smithay::wayland::compositor::RegionAttributes;
 use smithay::wayland::seat::WaylandFocus;
@@ -42,6 +42,11 @@ impl LibinputInterface for NixInterface {
 }
 
 impl State {
+    pub fn scancode_to_keycode(&self, scancode: u32) -> Keycode {
+        // see: https://github.com/rust-x-bindings/xkbcommon-rs/blob/cb449998d8a3de375d492fb7ec015b2925f38ddb/src/xkb/mod.rs#L50-L58
+        Keycode::new(scancode + 8)
+    }
+
     pub fn keyboard_input(&mut self, event_time_msec: u32, keycode: Keycode, state: KeyState) {
         let serial = SERIAL_COUNTER.next_serial();
         let keyboard = self.seat.get_keyboard().unwrap();
@@ -566,7 +571,6 @@ mod tests {
     use super::*;
     use crate::comp::State;
     use crate::utils::RenderTarget;
-    use smithay::input::keyboard::xkb::{KEYSYM_NO_FLAGS, keysym_from_name, keysym_get_name};
     use smithay::reexports::calloop::EventLoop;
     use smithay::reexports::input::Libinput;
     use smithay::utils::Rectangle;
@@ -600,18 +604,43 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_input() {
-        assert_eq!(keysym_get_name(Keysym::A), "A");
-        assert_eq!(Keysym::A, 0x30u32.into());
-        // TODO: we send Linux key events KEY_A is 0x30 !!
+    fn keyboard_scancode_conversion() {
+        let mut harness = TestState::new();
+        let state = harness.state();
+        let kb = state.seat.get_keyboard().unwrap();
 
-        // let mut harness = TestState::new();
-        // let state = harness.state();
-        // let kb = state.seat.get_keyboard().unwrap();
-        // state.keyboard_input(0, test_key_code, KeyState::Pressed);
-        // assert!(kb.pressed_keys().contains(&test_key_code));
-        // state.keyboard_input(0, test_key_code, KeyState::Released);
-        // assert!(kb.pressed_keys().is_empty());
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap =
+            xkb::Keymap::new_from_names(&context, "", "", "us", "", None, xkb::COMPILE_NO_FLAGS)
+                .unwrap();
+        let xkb_state = xkb::State::new(&keymap);
+
+        // Evdev keycode, from `input-event-codes.h`
+        // Linux evdev keycode (30)
+        const KEY_A: u32 = 30;
+        //     ↓ +8
+        // X11 keycode (38)
+        let x11_key_code = state.scancode_to_keycode(KEY_A);
+        //     ↓ keymap lookup
+        // X11 keysym (0x61 = 'a')
+        let x11_keysym = xkb_state.key_get_one_sym(x11_key_code);
+
+        assert_eq!(Keysym::a, x11_keysym);
+    }
+
+    #[test]
+    fn keyboard_input() {
+        let mut harness = TestState::new();
+        let state = harness.state();
+        let kb = state.seat.get_keyboard().unwrap();
+
+        const KEY_A: u32 = 30;
+        let test_key_code = state.scancode_to_keycode(KEY_A);
+        state.keyboard_input(0, test_key_code, KeyState::Pressed);
+        assert!(kb.pressed_keys().contains(&test_key_code));
+
+        state.keyboard_input(0, test_key_code, KeyState::Released);
+        assert!(kb.pressed_keys().is_empty());
     }
 
     #[test]
