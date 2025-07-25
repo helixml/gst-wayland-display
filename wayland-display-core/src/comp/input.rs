@@ -583,6 +583,7 @@ mod tests {
     use smithay::reexports::calloop::EventLoop;
     use smithay::reexports::input::Libinput;
     use smithay::{reexports::wayland_server::Display, utils::Point};
+    use smithay::output::{Output, PhysicalProperties, Subpixel};
 
     struct TestState {
         state: State,
@@ -682,5 +683,35 @@ mod tests {
         assert_eq!(state.pointer_location, expected_location);
         let pointer = state.seat.get_pointer().unwrap();
         assert_eq!(pointer.current_location(), expected_location);
+    }
+
+    #[test]
+    fn clamp_coords_keeps_within_bounds() {
+        let mut harness = TestState::new();
+        let state = harness.state();
+        let output = Output::new(
+            "HEADLESS-1".into(),
+            PhysicalProperties {
+                make: "Virtual".into(),
+                model: "Wolf".into(),
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+            },
+        );
+        output.create_global::<State>(&state.dh);
+        output.change_current_state(
+            Some(smithay::output::Mode {
+                size: (10, 10).into(),
+                refresh: 1000,
+            }), None, None, None
+        );
+        state.output = Some(output);
+
+        let extreme_pos = Point::from((-100.0, 5000.0));
+        let clamped = state.clamp_coords(extreme_pos);
+
+        // Should clamp negative x to 0 and large y to 10
+        assert!(clamped.x >= 0.0);
+        assert!(clamped.y <= 10.0);
     }
 }
