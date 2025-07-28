@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use wayland_backend::client::Backend;
 use wayland_client::protocol::wl_callback::WlCallback;
 use wayland_client::protocol::wl_display::WlDisplay;
-use wayland_client::protocol::{wl_callback, wl_pointer};
+use wayland_client::protocol::{wl_callback, wl_pointer, wl_region};
 use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop,
     protocol::{
@@ -14,6 +14,9 @@ use wayland_client::{
         wl_surface,
     },
 };
+use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_locked_pointer_v1::ZwpLockedPointerV1;
+use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1;
+use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1::ZwpPointerConstraintsV1;
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
@@ -33,6 +36,8 @@ struct State {
     buffer: Option<wl_buffer::WlBuffer>,
     wm_base: Option<xdg_wm_base::XdgWmBase>,
     viewporter: Option<WpViewporter>,
+    seat: Option<wl_seat::WlSeat>,
+    pointer_constraints: Option<ZwpPointerConstraintsV1>,
 
     windows: Vec<Window>,
     pub mouse_events: Vec<wl_pointer::Event>,
@@ -60,18 +65,20 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
         qh: &QueueHandle<Self>,
     ) {
         if let wl_registry::Event::Global {
-            name, interface, ..
+            name,
+            interface,
+            version,
         } = event
         {
             tracing::trace!("{:?} {:?}", name, interface);
             match &interface[..] {
                 "wl_compositor" => {
                     let compositor =
-                        registry.bind::<wl_compositor::WlCompositor, _, _>(name, 1, qh, ());
+                        registry.bind::<wl_compositor::WlCompositor, _, _>(name, version, qh, ());
                     state.compositor = Some(compositor);
                 }
                 "wl_shm" => {
-                    let shm = registry.bind::<wl_shm::WlShm, _, _>(name, 1, qh, ());
+                    let shm = registry.bind::<wl_shm::WlShm, _, _>(name, version, qh, ());
 
                     let (init_w, init_h) = (320, 240);
 
@@ -90,14 +97,21 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                     state.buffer = Some(buffer.clone());
                 }
                 "wl_seat" => {
-                    registry.bind::<wl_seat::WlSeat, _, _>(name, 1, qh, ());
+                    state.seat =
+                        Some(registry.bind::<wl_seat::WlSeat, _, _>(name, version, qh, ()));
                 }
                 "xdg_wm_base" => {
-                    let wm_base = registry.bind::<xdg_wm_base::XdgWmBase, _, _>(name, 1, qh, ());
+                    let wm_base =
+                        registry.bind::<xdg_wm_base::XdgWmBase, _, _>(name, version, qh, ());
                     state.wm_base = Some(wm_base);
                 }
                 "wp_viewporter" => {
-                    state.viewporter = Some(registry.bind::<WpViewporter, _, _>(name, 1, qh, ()));
+                    state.viewporter =
+                        Some(registry.bind::<WpViewporter, _, _>(name, version, qh, ()));
+                }
+                "zwp_pointer_constraints_v1" => {
+                    state.pointer_constraints =
+                        Some(registry.bind::<ZwpPointerConstraintsV1, _, _>(name, version, qh, ()))
                 }
                 _ => {}
             }
@@ -110,8 +124,11 @@ delegate_noop!(State: ignore wl_surface::WlSurface);
 delegate_noop!(State: ignore wl_shm::WlShm);
 delegate_noop!(State: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(State: ignore wl_buffer::WlBuffer);
+delegate_noop!(State: ignore wl_region::WlRegion);
 delegate_noop!(State: ignore WpViewporter);
 delegate_noop!(State: ignore WpViewport);
+delegate_noop!(State: ignore ZwpPointerConstraintsV1);
+delegate_noop!(State: ignore ZwpLockedPointerV1);
 
 impl WaylandClient {
     pub fn new(w_socket: UnixStream) -> Self {
@@ -125,10 +142,14 @@ impl WaylandClient {
 
         let state = State {
             qh: qh.clone(),
+
             compositor: None,
             buffer: None,
             wm_base: None,
             viewporter: None,
+            seat: None,
+            pointer_constraints: None,
+
             windows: Vec::new(),
             mouse_events: Vec::new(),
         };
@@ -174,6 +195,32 @@ impl WaylandClient {
 
     pub fn get_client_events(&mut self) -> &mut Vec<wl_pointer::Event> {
         self.state.mouse_events.as_mut()
+    }
+
+    pub fn lock_pointer(&mut self, x: i32, y: i32, width: i32, height: i32) -> ZwpLockedPointerV1 {
+        let qh = self.qh.clone();
+        let window = self.state.windows.last_mut().unwrap();
+        let pointer = self.state.seat.as_ref().unwrap().get_pointer(&qh, ());
+        let region = self
+            .state
+            .compositor
+            .as_ref()
+            .unwrap()
+            .create_region(&qh, ());
+        region.add(x, y, width, height);
+
+        self.state
+            .pointer_constraints
+            .as_ref()
+            .unwrap()
+            .lock_pointer(
+                &window.surface,
+                &pointer,
+                Some(&region),
+                zwp_pointer_constraints_v1::Lifetime::Oneshot,
+                &qh,
+                (),
+            )
     }
 }
 
