@@ -16,6 +16,8 @@ use utils::RenderTarget;
 pub(crate) mod comp;
 pub mod utils;
 pub(crate) mod wayland;
+#[cfg(test)]
+mod tests;
 
 pub use crate::utils::video_info::GstVideoInfo;
 

@@ -89,14 +89,14 @@ impl ClientData for ClientState {
 }
 
 #[allow(dead_code)]
-pub(crate) struct State {
+pub struct State {
     pub handle: LoopHandle<'static, State>,
     should_quit: bool,
-    clock: Clock<Monotonic>,
+    pub(crate) clock: Clock<Monotonic>,
 
     // render
-    dtr: Option<OutputDamageTracker>,
-    output_buffer: Option<GsBufferType>,
+    pub(crate) dtr: Option<OutputDamageTracker>,
+    pub(crate) output_buffer: Option<GsBufferType>,
     render_node: Option<DrmNode>,
     pub renderer: GlesRenderer,
     dmabuf_global: Option<(DmabufGlobal, GlobalId)>,
@@ -108,7 +108,7 @@ pub(crate) struct State {
     pub seat: Seat<Self>,
     pub space: Space<Window>,
     pub popups: PopupManager,
-    pointer_location: Point<f64, Logical>,
+    pub(crate) pointer_location: Point<f64, Logical>,
     last_pointer_movement: Instant,
     cursor_element: MemoryRenderBuffer,
     pub cursor_state: CursorImageStatus,
