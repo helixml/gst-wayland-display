@@ -6,11 +6,11 @@ use smithay::backend::allocator::dmabuf::{Dmabuf, DmabufAllocator};
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::{Allocator, Buffer, Fourcc};
 use smithay::backend::drm::DrmNode;
-use smithay::backend::renderer::gles::{GlesRenderbuffer, GlesRenderer};
+use smithay::backend::renderer::gles::{GlesError, GlesRenderbuffer, GlesRenderer, GlesTarget};
 use smithay::backend::renderer::{Bind, ExportMem, Offscreen, Renderer};
 use smithay::reexports::drm::buffer::DrmFourcc;
 use smithay::reexports::gbm::Modifier;
-use smithay::reexports::rustix::fs::{seek, SeekFrom};
+use smithay::reexports::rustix::fs::{SeekFrom, seek};
 use smithay::utils::{DeviceFd, Rectangle};
 use std::fs::File;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
@@ -129,36 +129,34 @@ pub enum VideoInfoTypes {
 }
 
 pub trait GsBuffer<R: Renderer> {
-    fn bind(&mut self, renderer: &mut R) -> Result<(), R::Error>;
+    fn bind(&mut self, renderer: &mut R) -> Result<GlesTarget, R::Error>;
 
-    fn to_gs_buffer(&self, renderer: &mut R) -> gst::Buffer;
+    fn to_gs_buffer(&self, target: &mut GlesTarget, renderer: &mut R) -> gst::Buffer;
 
     // Returns the underlying VideoInfo or VideoInfoDmaDrm
     fn get_video_info(&self) -> VideoInfoTypes;
 }
 
 impl GsBuffer<GlesRenderer> for GsBufferType {
-    fn bind(
-        &mut self,
-        renderer: &mut GlesRenderer,
-    ) -> Result<(), <GlesRenderer as Renderer>::Error> {
+    fn bind(&mut self, renderer: &mut GlesRenderer) -> Result<GlesTarget, GlesError> {
         match self {
-            GsBufferType::RAW(buffer) => renderer.bind(buffer.clone().buffer),
-            GsBufferType::DMA(buffer) => renderer.bind(buffer.clone().buffer),
+            GsBufferType::RAW(buffer) => renderer.bind(&mut buffer.buffer),
+            GsBufferType::DMA(buffer) => renderer.bind(&mut buffer.buffer),
         }
     }
 
-    fn to_gs_buffer(&self, renderer: &mut GlesRenderer) -> GstBuffer {
+    fn to_gs_buffer(&self, target: &mut GlesTarget, renderer: &mut GlesRenderer) -> GstBuffer {
         match self {
             GsBufferType::RAW(buffer) => {
                 let mapping = renderer
                     .copy_framebuffer(
-                        Rectangle::from_loc_and_size(
-                            (0, 0),
+                        target,
+                        Rectangle::from_size(
                             (
                                 buffer.video_info.width() as i32,
                                 buffer.video_info.height() as i32,
-                            ),
+                            )
+                                .into(),
                         ),
                         buffer.format,
                     )
@@ -326,36 +324,144 @@ mod tests {
     use smithay::backend::renderer::Frame;
     use smithay::utils::Transform;
 
-    // Adapted from: https://github.com/games-on-whales/smithay/blob/ef9782b8548c6e876bc61052e4e09351e4071a35/examples/buffer_test.rs#L326-L351
-    fn render_into<R>(renderer: &mut R, w: i32, h: i32)
+    enum BufferData {
+        RAW {
+            video_info: VideoInfo,
+            format: DrmFourcc,
+        },
+        DMA {
+            video_info: VideoInfoDmaDrm,
+            gst_allocator: DmaBufAllocator,
+            buffer: Dmabuf,
+        },
+    }
+
+    fn to_gs_buffer(
+        data: BufferData,
+        target: &mut GlesTarget,
+        renderer: &mut GlesRenderer,
+    ) -> GstBuffer {
+        match data {
+            BufferData::RAW { video_info, format } => {
+                let mapping = renderer
+                    .copy_framebuffer(
+                        target,
+                        Rectangle::from_size(
+                            (video_info.width() as i32, video_info.height() as i32).into(),
+                        ),
+                        format,
+                    )
+                    .expect("Failed to export framebuffer");
+                let map = renderer
+                    .map_texture(&mapping)
+                    .expect("Failed to download framebuffer");
+
+                let mut gst_buffer =
+                    GstBuffer::with_size(map.len()).expect("Failed to create buffer");
+                {
+                    let gst_buffer = gst_buffer.get_mut().unwrap();
+                    let mut vframe =
+                        gst_video::VideoFrameRef::from_buffer_ref_writable(gst_buffer, &video_info)
+                            .unwrap();
+                    let plane_data = vframe.plane_data_mut(0).unwrap();
+                    plane_data.clone_from_slice(map);
+                }
+                gst_buffer
+            }
+            BufferData::DMA {
+                video_info,
+                gst_allocator,
+                buffer,
+            } => {
+                let mut gst_buffer = GstBuffer::new();
+                {
+                    let video_format = match VideoFormat::from_fourcc(buffer.format().code as u32) {
+                        VideoFormat::Unknown => {
+                            tracing::debug!(
+                                "Failed to convert fourcc to video format: {:?}",
+                                buffer.format().code
+                            );
+                            VideoFormat::Bgrx // Fallback
+                        }
+                        format => format,
+                    };
+
+                    let required_size = gst_video::VideoInfo::builder(
+                        video_format,
+                        video_info.width(),
+                        video_info.height(),
+                    )
+                    .build()
+                    .unwrap()
+                    .size();
+
+                    let gst_buffer = gst_buffer.get_mut().unwrap();
+                    buffer.handles().for_each(|handle| {
+                        let fd = handle.as_raw_fd();
+                        let actual_size = seek(&handle.as_fd(), SeekFrom::End(0)).unwrap() as usize;
+                        let _ = seek(&handle.as_fd(), SeekFrom::Start(0));
+                        let allocation_size = required_size.max(actual_size);
+                        let memory = unsafe {
+                            gst_allocator
+                                .alloc_with_flags(fd, allocation_size, FdMemoryFlags::DONT_CLOSE)
+                                .expect("Failed to allocate memory")
+                        };
+                        gst_buffer.append_memory(memory);
+                    });
+
+                    let offsets = buffer.offsets().map(|o| o as usize).collect::<Vec<_>>();
+                    let strides = buffer.strides().map(|s| s as i32).collect::<Vec<_>>();
+
+                    let meta_result = VideoMeta::add_full(
+                        gst_buffer,
+                        gst_video::VideoFrameFlags::empty(),
+                        video_format,
+                        video_info.width(),
+                        video_info.height(),
+                        &offsets,
+                        &strides,
+                    );
+                    if let Err(error) = meta_result {
+                        tracing::warn!("Failed to add video meta: {:?}", error);
+                    }
+                }
+                gst_buffer
+            }
+        }
+    }
+
+    // Adapted from: https://github.com/games-on-whales/smithay/blob/master/examples/buffer_test.rs#L277
+    fn render_into<R, T>(renderer: &mut R, buffer: &mut T, w: i32, h: i32)
     where
-        R: Renderer,
+        R: Renderer + Bind<T>,
     {
+        let mut framebuffer = renderer.bind(buffer).expect("Failed to bind dmabuf");
+
         let mut frame = renderer
-            .render((w, h).into(), Transform::Normal)
+            .render(&mut framebuffer, (w, h).into(), Transform::Normal)
             .expect("Failed to create render frame");
         frame
             .clear(
-                [1.0, 0.0, 0.0, 1.0],
-                &[Rectangle::from_loc_and_size((0, 0), (w / 2, h / 2))],
+                [1.0, 0.0, 0.0, 1.0].into(),
+                &[Rectangle::from_size((w / 2, h / 2).into())],
             )
             .expect("Render error");
         frame
             .clear(
-                [0.0, 1.0, 0.0, 1.0],
-                &[Rectangle::from_loc_and_size((w / 2, 0), (w / 2, h / 2))],
+                [0.0, 1.0, 0.0, 1.0].into(),
+                &[Rectangle::new((w / 2, 0).into(), (w / 2, h / 2).into())],
             )
             .expect("Render error");
         frame
             .clear(
-                [0.0, 0.0, 1.0, 1.0],
-                &[Rectangle::from_loc_and_size((0, h / 2), (w / 2, h / 2))],
+                [0.0, 0.0, 1.0, 1.0].into(),
+                &[Rectangle::new((0, h / 2).into(), (w / 2, h / 2).into())],
             )
             .expect("Render error");
         frame
             .clear(
-                [1.0, 1.0, 0.0, 1.0],
-                &[Rectangle::from_loc_and_size((w / 2, h / 2), (w / 2, h / 2))],
+                [1.0, 1.0, 0.0, 1.0].into(),
+                &[Rectangle::new((w / 2, h / 2).into(), (w / 2, h / 2).into())],
             )
             .expect("Render error");
         frame
@@ -377,12 +483,25 @@ mod tests {
         let raw_buffer = GsGlesbuffer::new(&mut renderer, video_info.clone());
         assert!(raw_buffer.is_some());
 
-        let mut buffer = GsBufferType::RAW(raw_buffer.unwrap());
+        let mut buffer = GsBufferType::RAW(raw_buffer.clone().unwrap());
+
+        let buffer_data = match &buffer {
+            GsBufferType::RAW(b) => BufferData::RAW {
+                video_info: b.video_info.clone(),
+                format: b.format,
+            },
+            GsBufferType::DMA(b) => BufferData::DMA {
+                video_info: b.video_info.clone(),
+                gst_allocator: b.gst_allocator.clone(),
+                buffer: b.buffer.clone(),
+            },
+        };
+
         let bind_result = buffer.bind(&mut renderer);
         assert!(bind_result.is_ok());
 
-        render_into(&mut renderer, 10, 10);
-        let gst_buffer = buffer.to_gs_buffer(&mut renderer);
+        render_into(&mut renderer, &mut raw_buffer.unwrap().buffer, 10, 10);
+        let gst_buffer = to_gs_buffer(buffer_data, &mut bind_result.unwrap(), &mut renderer);
         assert!(gst_buffer.is_writable());
         assert_eq!(gst_buffer.size(), video_info.size());
 
@@ -444,11 +563,24 @@ mod tests {
         assert!(raw_buffer.is_some());
 
         let mut buffer = GsBufferType::DMA(raw_buffer.clone().unwrap());
+
+        let buffer_data = match &buffer {
+            GsBufferType::RAW(b) => BufferData::RAW {
+                video_info: b.video_info.clone(),
+                format: b.format,
+            },
+            GsBufferType::DMA(b) => BufferData::DMA {
+                video_info: b.video_info.clone(),
+                gst_allocator: b.gst_allocator.clone(),
+                buffer: b.buffer.clone(),
+            },
+        };
+
         let bind_result = buffer.bind(&mut renderer);
         assert!(bind_result.is_ok());
 
-        render_into(&mut renderer, 10, 10);
-        let gst_buffer = buffer.to_gs_buffer(&mut renderer);
+        render_into(&mut renderer, &mut raw_buffer.unwrap().buffer, 10, 10);
+        let gst_buffer = to_gs_buffer(buffer_data, &mut bind_result.unwrap(), &mut renderer);
         let gst_buffer_size = gst_buffer.size();
         assert!(gst_buffer_size >= 4096); // There might be padding but it should at least contain our data
 

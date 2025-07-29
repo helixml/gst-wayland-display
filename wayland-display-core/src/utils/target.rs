@@ -1,10 +1,8 @@
 use std::{ffi::CString, os::unix::fs::MetadataExt, str::FromStr};
 
-use smithay::{
-    backend::{
-        drm::{CreateDrmNodeError, DrmNode, NodeType},
-        udev,
-    },
+use smithay::backend::{
+    drm::{CreateDrmNodeError, DrmNode, NodeType},
+    udev,
 };
 use smithay::reexports::rustix::fs::major;
 

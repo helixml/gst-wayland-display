@@ -22,12 +22,12 @@ mod generated {
 
 use smithay::{
     backend::allocator::{
-        dmabuf::{Dmabuf, DmabufFlags},
         Format, Fourcc, Modifier,
+        dmabuf::{Dmabuf, DmabufFlags},
     },
     reexports::wayland_server::{
-        backend::GlobalId, protocol::wl_buffer::WlBuffer, Client, DataInit, Dispatch,
-        DisplayHandle, GlobalDispatch, New, Resource,
+        Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
+        backend::GlobalId, protocol::wl_buffer::WlBuffer,
     },
     wayland::{
         buffer::BufferHandler,
@@ -65,8 +65,8 @@ pub trait DrmHandler<R: 'static> {
 }
 
 impl<D> GlobalDispatch<wl_drm::WlDrm, DrmGlobalData, D> for WlDrmState
-    where
-        D: GlobalDispatch<wl_drm::WlDrm, DrmGlobalData>
+where
+    D: GlobalDispatch<wl_drm::WlDrm, DrmGlobalData>
         + Dispatch<wl_drm::WlDrm, DrmInstanceData>
         + BufferHandler
         + DmabufHandler
@@ -103,8 +103,8 @@ impl<D> GlobalDispatch<wl_drm::WlDrm, DrmGlobalData, D> for WlDrmState
 }
 
 impl<D> Dispatch<wl_drm::WlDrm, DrmInstanceData, D> for WlDrmState
-    where
-        D: GlobalDispatch<wl_drm::WlDrm, DrmGlobalData>
+where
+    D: GlobalDispatch<wl_drm::WlDrm, DrmGlobalData>
         + Dispatch<wl_drm::WlDrm, DrmInstanceData>
         + Dispatch<WlBuffer, Dmabuf>
         + BufferHandler
@@ -169,11 +169,20 @@ impl<D> Dispatch<wl_drm::WlDrm, DrmInstanceData, D> for WlDrmState
                     return;
                 }
 
-                let mut dma = Dmabuf::builder((width, height), format, Modifier::Invalid, DmabufFlags::empty());
+                let mut dma = Dmabuf::builder(
+                    (width, height),
+                    format,
+                    Modifier::Invalid,
+                    DmabufFlags::empty(),
+                );
                 dma.add_plane(name, 0, offset0 as u32, stride0 as u32);
                 match dma.build() {
                     Some(dmabuf) => {
-                        match DrmHandler::dmabuf_imported(state, &data.dmabuf_global, dmabuf.clone()) {
+                        match DrmHandler::dmabuf_imported(
+                            state,
+                            &data.dmabuf_global,
+                            dmabuf.clone(),
+                        ) {
                             Ok(_) => {
                                 // import was successful
                                 data_init.init(id, dmabuf);
@@ -206,8 +215,8 @@ pub fn create_drm_global<D>(
     formats: Vec<Format>,
     dmabuf_global: &DmabufGlobal,
 ) -> GlobalId
-    where
-        D: GlobalDispatch<wl_drm::WlDrm, DrmGlobalData>
+where
+    D: GlobalDispatch<wl_drm::WlDrm, DrmGlobalData>
         + Dispatch<wl_drm::WlDrm, DrmInstanceData>
         + BufferHandler
         + DmabufHandler
@@ -223,13 +232,13 @@ pub fn create_drm_global_with_filter<D, F>(
     dmabuf_global: &DmabufGlobal,
     client_filter: F,
 ) -> GlobalId
-    where
-        D: GlobalDispatch<wl_drm::WlDrm, DrmGlobalData>
+where
+    D: GlobalDispatch<wl_drm::WlDrm, DrmGlobalData>
         + Dispatch<wl_drm::WlDrm, DrmInstanceData>
         + BufferHandler
         + DmabufHandler
         + 'static,
-        F: for<'a> Fn(&'a Client) -> bool + Send + Sync + 'static,
+    F: for<'a> Fn(&'a Client) -> bool + Send + Sync + 'static,
 {
     let formats = Arc::new(
         formats

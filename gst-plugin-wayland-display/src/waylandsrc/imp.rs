@@ -5,22 +5,22 @@ use std::sync::Mutex;
 use gst::message::Application;
 use gst_video::{VideoCapsBuilder, VideoFormat, VideoInfoDmaDrm};
 
+use gst::LibraryError;
 use gst::subclass::prelude::*;
-use gst::{glib, Event, Fraction};
-use gst::{LibraryError};
-use gst::{prelude::*, Structure};
+use gst::{Event, Fraction, glib};
+use gst::{Structure, prelude::*};
 use gst_base::prelude::BaseSrcExt;
 use gst_base::subclass::base_src::CreateSuccess;
 use gst_base::subclass::prelude::*;
 use once_cell::sync::Lazy;
-use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::Registry;
+use tracing_subscriber::layer::SubscriberExt;
 use waylanddisplaycore::{
-    channel, ButtonState, Channel, Command, DrmFormat, DrmModifier, GstVideoInfo, KeyState, Sender,
-    WaylandDisplay,
+    ButtonState, Channel, Command, DrmFormat, DrmModifier, GstVideoInfo, KeyState, Sender,
+    WaylandDisplay, channel,
 };
 
-use crate::utils::{GstLayer, CAT};
+use crate::utils::{CAT, GstLayer};
 
 pub struct WaylandDisplaySrc {
     state: Mutex<Option<State>>,
@@ -433,7 +433,16 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                 command_rx.deref_mut().take().unwrap(),
             )
         }) else {
-            return Err(gst::error_msg!(LibraryError::Failed, ("Failed to open drm node {}, if you want to utilize software rendering set `render-node=software`.", settings.render_node.as_deref().unwrap_or("/dev/dri/renderD128"))));
+            return Err(gst::error_msg!(
+                LibraryError::Failed,
+                (
+                    "Failed to open drm node {}, if you want to utilize software rendering set `render-node=software`.",
+                    settings
+                        .render_node
+                        .as_deref()
+                        .unwrap_or("/dev/dri/renderD128")
+                )
+            ));
         };
 
         for path in &settings.input_devices {
@@ -512,8 +521,8 @@ fn drm_to_gst_format(format: &DrmFormat) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use waylanddisplaycore::utils::tests::INIT;
     use waylanddisplaycore::DrmFormat;
+    use waylanddisplaycore::utils::tests::INIT;
 
     fn test_init() -> () {
         INIT.call_once(|| {

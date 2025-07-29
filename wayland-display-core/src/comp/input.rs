@@ -1,27 +1,26 @@
-use super::{focus::FocusTarget, State};
+use super::{State, focus::FocusTarget};
+use smithay::backend::input::Keycode;
+use smithay::backend::libinput::LibinputInputBackend;
 use smithay::input::keyboard::Keysym;
 use smithay::reexports::input::event::pointer::PointerEventTrait;
 use smithay::wayland::seat::WaylandFocus;
 use smithay::{
-    backend::{
-        input::{
-            Axis, AxisSource, ButtonState, Event, InputEvent, KeyState, KeyboardKeyEvent,
-            PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent, TouchSlot,
-            AbsolutePositionEvent,
-        },
-        libinput::LibinputInputBackend,
+    backend::input::{
+        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputEvent, KeyState,
+        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, TouchEvent,
+        TouchSlot,
     },
     input::{
-        keyboard::{keysyms, FilterResult},
+        keyboard::{FilterResult, keysyms},
         pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
-        touch::{DownEvent, UpEvent, MotionEvent as TouchMotionEvent},
+        touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent},
     },
     reexports::{
         input::LibinputInterface,
-        rustix::fs::{open, Mode, OFlags},
+        rustix::fs::{Mode, OFlags, open},
     },
-    utils::{Logical, Point, Serial, SERIAL_COUNTER},
-    wayland::pointer_constraints::{with_pointer_constraint, PointerConstraint},
+    utils::{Logical, Point, SERIAL_COUNTER, Serial},
+    wayland::pointer_constraints::{PointerConstraint, with_pointer_constraint},
 };
 use std::{os::unix::io::OwnedFd, path::Path, time::Instant};
 
@@ -42,7 +41,12 @@ impl LibinputInterface for NixInterface {
 }
 
 impl State {
-    pub fn keyboard_input(&mut self, event_time_msec: u32, keycode: u32, state: KeyState) {
+    pub fn scancode_to_keycode(&self, scancode: u32) -> Keycode {
+        // see: https://github.com/rust-x-bindings/xkbcommon-rs/blob/cb449998d8a3de375d492fb7ec015b2925f38ddb/src/xkb/mod.rs#L50-L58
+        Keycode::new(scancode + 8)
+    }
+
+    pub fn keyboard_input(&mut self, event_time_msec: u32, keycode: Keycode, state: KeyState) {
         let serial = SERIAL_COUNTER.next_serial();
         let keyboard = self.seat.get_keyboard().unwrap();
 
@@ -97,29 +101,49 @@ impl State {
         );
     }
 
-    pub fn pointer_motion(
-        &mut self,
-        event_time_usec: u64,
-        delta: Point<f64, Logical>,
-        delta_unaccelerated: Point<f64, Logical>,
+    pub(crate) fn maybe_activate_pointer_constraint(
+        &self,
+        new_under: &Option<(FocusTarget, Point<f64, Logical>)>,
+        new_location: Point<f64, Logical>,
     ) {
-        self.last_pointer_movement = Instant::now();
-        let serial = SERIAL_COUNTER.next_serial();
-
         let pointer = self.seat.get_pointer().unwrap();
-        let under = self
-            .space
-            .element_under(self.pointer_location)
-            .map(|(w, pos)| (w.clone().into(), pos));
 
-        /* Check if the pointer is locked or confined (pointer constraints protocol) */
-        let mut pointer_locked = false;
-        let mut pointer_confined = false;
-        let mut confine_region = None;
+        if let Some((under, surface_location)) = new_under
+            .as_ref()
+            .and_then(|(target, loc)| Some((target.wl_surface()?, loc)))
+        {
+            with_pointer_constraint(&under, &pointer, |constraint| match constraint {
+                Some(constraint) if !constraint.is_active() => {
+                    let point = new_location - *surface_location;
+                    if constraint
+                        .region()
+                        .map_or(true, |region| region.contains(point.to_i32_round()))
+                    {
+                        constraint.activate();
+                    }
+                }
+                _ => {}
+            });
+        }
+    }
+
+    fn can_pointer_move(
+        &self,
+        under: &Option<(FocusTarget, Point<f64, Logical>)>,
+        target_position: Point<f64, Logical>,
+    ) -> bool {
+        let pointer = self.seat.get_pointer().unwrap();
+        let mut should_motion = true;
+
+        let new_under = self
+            .space
+            .element_under(target_position)
+            .map(|(w, pos)| (w.clone().into(), pos.to_f64()));
+
         if let Some((surface, surface_loc)) =
             under
                 .as_ref()
-                .and_then(|(target, l): &(FocusTarget, Point<i32, Logical>)| {
+                .and_then(|(target, l): &(FocusTarget, Point<f64, Logical>)| {
                     Some((target.wl_surface()?, l))
                 })
         {
@@ -127,17 +151,33 @@ impl State {
                 Some(constraint) if constraint.is_active() => {
                     // Constraint does not apply if not within region
                     if !constraint.region().map_or(true, |x| {
-                        x.contains(pointer.current_location().to_i32_round() - *surface_loc)
+                        x.contains((pointer.current_location() - *surface_loc).to_i32_round())
                     }) {
                         return;
                     }
                     match &*constraint {
                         PointerConstraint::Locked(_locked) => {
-                            pointer_locked = true;
+                            should_motion = false;
                         }
                         PointerConstraint::Confined(confine) => {
-                            pointer_confined = true;
-                            confine_region = confine.region().cloned();
+                            // If confined, don't move pointer if it would go outside surface or region
+                            if let Some((surface, surface_loc)) = &under {
+                                if new_under.as_ref().and_then(
+                                    |(under, _): &(FocusTarget, Point<f64, Logical>)| {
+                                        under.wl_surface()
+                                    },
+                                ) != surface.wl_surface()
+                                {
+                                    should_motion = false;
+                                }
+                                if let Some(region) = confine.region() {
+                                    if !region
+                                        .contains((target_position - *surface_loc).to_i32_round())
+                                    {
+                                        should_motion = false;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -145,27 +185,46 @@ impl State {
             });
         }
 
-        self.pointer_location += delta;
-        self.pointer_location = self.clamp_coords(self.pointer_location);
-        let new_under = self
+        // If pointer is now in a constraint region, activate it
+        self.maybe_activate_pointer_constraint(&new_under, target_position);
+
+        should_motion
+    }
+
+    pub fn pointer_motion(
+        &mut self,
+        event_time_msec: u32,
+        event_time_usec: u64,
+        delta: Point<f64, Logical>,
+        delta_unaccelerated: Point<f64, Logical>,
+    ) {
+        let serial = SERIAL_COUNTER.next_serial();
+        let pointer = self.seat.get_pointer().unwrap();
+        let under = self
             .space
             .element_under(self.pointer_location)
             .map(|(w, pos)| (w.clone().into(), pos.to_f64()));
 
-        // If pointer is locked, only emit relative motion
-        if !pointer_locked {
+        let possible_pos = self.clamp_coords(self.pointer_location + delta);
+
+        // Pointer should only move if it's not locked or confined (and going out of bounds)
+        if self.can_pointer_move(&under, possible_pos) {
+            self.set_pointer_location(possible_pos);
+
+            // Not sure why, but order here matters (at least when using Sway nested)!!!
+            // If we send the motion event after the relative_motion it'll behave oddly
             pointer.motion(
                 self,
-                new_under.clone(),
+                under.clone(),
                 &MotionEvent {
                     location: self.pointer_location,
                     serial,
-                    time: (event_time_usec / 1000) as u32,
+                    time: event_time_msec,
                 },
             );
         }
 
-        /* Relative motion is always applied */
+        // Relative motion is always applied
         pointer.relative_motion(
             self,
             under.map(|(w, pos)| (w, pos.to_f64())),
@@ -176,65 +235,29 @@ impl State {
             },
         );
 
-        // If pointer is now in a constraint region, activate it
-        if let Some((under, surface_location)) = new_under
-            .as_ref()
-            .and_then(|(target, loc)| Some((target.wl_surface()?, loc)))
-        {
-            with_pointer_constraint(&under, &pointer, |constraint| match constraint {
-                Some(constraint) if !constraint.is_active() => {
-                    let point =
-                        self.pointer_location.to_i32_round() - surface_location.to_i32_round();
-                    if constraint
-                        .region()
-                        .map_or(true, |region| region.contains(point))
-                    {
-                        constraint.activate();
-                    }
-                }
-                _ => {}
-            });
-        }
-
         pointer.frame(self);
     }
 
-    pub fn pointer_motion_absolute(&mut self, event_time_usec: u64, position: Point<f64, Logical>) {
-        self.last_pointer_movement = Instant::now();
-        let serial = SERIAL_COUNTER.next_serial();
+    pub fn set_pointer_location(&mut self, location: Point<f64, Logical>) {
+        self.pointer_location = location;
+        self.pointer_absolute_location = location;
+    }
+
+    pub fn pointer_motion_absolute(&mut self, event_time_msec: u32, position: Point<f64, Logical>) {
         let relative_movement = (
-            position.x - self.pointer_location.x,
-            position.y - self.pointer_location.y,
+            position.x - self.pointer_absolute_location.x,
+            position.y - self.pointer_absolute_location.y,
         )
             .into();
-        self.pointer_location = position;
 
-        let pointer = self.seat.get_pointer().unwrap();
-        let under = self
-            .space
-            .element_under(self.pointer_location)
-            .map(|(w, pos)| (w.clone().into(), pos.to_f64().clone()));
-        pointer.motion(
-            self,
-            under.clone(),
-            &MotionEvent {
-                location: self.pointer_location,
-                serial,
-                time: (event_time_usec / 1000) as u32,
-            },
+        self.pointer_motion(
+            event_time_msec,
+            event_time_msec as u64 * 1000,
+            relative_movement,
+            relative_movement,
         );
-
-        pointer.relative_motion(
-            self,
-            under,
-            &RelativeMotionEvent {
-                delta: relative_movement,
-                delta_unaccel: relative_movement,
-                utime: event_time_usec,
-            },
-        );
-
-        pointer.frame(self);
+        //  pointer_absolute_location should always point to the unclamped position sent by Moonlight
+        self.pointer_absolute_location = position;
     }
 
     pub fn pointer_button(&mut self, event_time_msec: u32, button_code: u32, state: ButtonState) {
@@ -288,7 +311,10 @@ impl State {
         pointer.frame(self);
     }
 
-    fn touch_location_transformed<B: smithay::backend::input::InputBackend, E: AbsolutePositionEvent<B>>(
+    fn touch_location_transformed<
+        B: smithay::backend::input::InputBackend,
+        E: AbsolutePositionEvent<B>,
+    >(
         &self,
         evt: &E,
     ) -> Option<Point<f64, Logical>> {
@@ -309,10 +335,11 @@ impl State {
     }
 
     pub fn relative_touch_to_logical(
-        &mut self,                
-        relative_pos: Point<f64, Logical>,                           // 0.0 to 1.0
+        &mut self,
+        relative_pos: Point<f64, Logical>, // 0.0 to 1.0
     ) -> Option<Point<f64, Logical>> {
-        let output = self.space
+        let output = self
+            .space
             .outputs()
             .find(|output| output.name().starts_with("eDP"))
             .or_else(|| self.space.outputs().next())?;
@@ -333,7 +360,7 @@ impl State {
         // Map to global logical coordinates
         Some(transformed_pos + output_geometry.loc.to_f64())
     }
-    
+
     pub fn touch_down(
         &mut self,
         event_time_msec: u32,
@@ -346,7 +373,7 @@ impl State {
             .space
             .element_under(location)
             .map(|(w, pos)| (w.clone().into(), pos.to_f64()));
-    
+
         touch.down(
             self,
             under,
@@ -360,14 +387,10 @@ impl State {
         touch.frame(self);
     }
 
-    pub fn touch_up(
-        &mut self,
-        event_time_msec: u32,
-        slot: TouchSlot,
-    ) {
+    pub fn touch_up(&mut self, event_time_msec: u32, slot: TouchSlot) {
         let serial = SERIAL_COUNTER.next_serial();
         let touch = self.seat.get_touch().unwrap();
-    
+
         touch.up(
             self,
             &UpEvent {
@@ -378,7 +401,7 @@ impl State {
         );
         touch.frame(self);
     }
-    
+
     pub fn touch_motion(
         &mut self,
         event_time_msec: u32,
@@ -390,7 +413,7 @@ impl State {
             .space
             .element_under(location)
             .map(|(w, pos)| (w.clone().into(), pos.to_f64()));
-    
+
         touch.motion(
             self,
             under,
@@ -407,7 +430,7 @@ impl State {
         let touch = self.seat.get_touch().unwrap();
         touch.cancel(self);
     }
-    
+
     pub fn touch_frame(&mut self) {
         let touch = self.seat.get_touch().unwrap();
         touch.frame(self);
@@ -419,7 +442,12 @@ impl State {
                 self.keyboard_input(event.time_msec(), event.key_code(), event.state());
             }
             InputEvent::PointerMotion { event, .. } => {
-                self.pointer_motion(event.time_usec(), event.delta(), event.delta_unaccel());
+                self.pointer_motion(
+                    event.time_msec(),
+                    event.time_usec(),
+                    event.delta(),
+                    event.delta_unaccel(),
+                );
             }
             InputEvent::PointerMotionAbsolute { event } => {
                 if let Some(output) = self.output.as_ref() {
@@ -431,10 +459,10 @@ impl State {
                         .to_logical(output.current_scale().fractional_scale())
                         .to_i32_round();
 
-                    let new_x = event.absolute_x_transformed(output_size.w);
-                    let new_y = event.absolute_y_transformed(output_size.h);
+                    let new_x = event.x_transformed(output_size.w);
+                    let new_y = event.y_transformed(output_size.h);
 
-                    self.pointer_motion_absolute(event.time_usec(), (new_x, new_y).into());
+                    self.pointer_motion_absolute(event.time_msec(), (new_x, new_y).into());
                 }
             }
             InputEvent::PointerButton { event, .. } => {
@@ -521,5 +549,150 @@ impl State {
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::comp::State;
+    use crate::utils::RenderTarget;
+    use smithay::input::keyboard::xkb;
+    use smithay::output::{Output, PhysicalProperties, Subpixel};
+    use smithay::reexports::calloop::EventLoop;
+    use smithay::reexports::input::Libinput;
+    use smithay::{reexports::wayland_server::Display, utils::Point};
+
+    struct TestState {
+        state: State,
+    }
+
+    impl TestState {
+        fn new() -> Self {
+            let libinput_context = Libinput::new_from_path(NixInterface);
+            let event_loop = EventLoop::<State>::try_new().expect("Unable to create event_loop");
+            let display = Display::<State>::new().unwrap();
+            let dh = display.handle();
+
+            let state = State::new(
+                &RenderTarget::Software,
+                &dh,
+                &libinput_context,
+                event_loop.handle(),
+            );
+
+            TestState { state }
+        }
+
+        fn state(&mut self) -> &mut State {
+            &mut self.state
+        }
+    }
+
+    #[test]
+    fn keyboard_scancode_conversion() {
+        let mut harness = TestState::new();
+        let state = harness.state();
+
+        let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+        let keymap =
+            xkb::Keymap::new_from_names(&context, "", "", "us", "", None, xkb::COMPILE_NO_FLAGS)
+                .unwrap();
+        let xkb_state = xkb::State::new(&keymap);
+
+        // Evdev keycode, from `input-event-codes.h`
+        // Linux evdev keycode (30)
+        const KEY_A: u32 = 30;
+        //     ↓ +8
+        // X11 keycode (38)
+        let x11_key_code = state.scancode_to_keycode(KEY_A);
+        //     ↓ keymap lookup
+        // X11 keysym (0x61 = 'a')
+        let x11_keysym = xkb_state.key_get_one_sym(x11_key_code);
+
+        assert_eq!(Keysym::a, x11_keysym);
+    }
+
+    #[test]
+    fn keyboard_input() {
+        let mut harness = TestState::new();
+        let state = harness.state();
+        let kb = state.seat.get_keyboard().unwrap();
+
+        const KEY_A: u32 = 30;
+        let test_key_code = state.scancode_to_keycode(KEY_A);
+        state.keyboard_input(0, test_key_code, KeyState::Pressed);
+        assert!(kb.pressed_keys().contains(&test_key_code));
+
+        state.keyboard_input(0, test_key_code, KeyState::Released);
+        assert!(kb.pressed_keys().is_empty());
+    }
+
+    #[test]
+    fn pointer_motion_moves_pointer_location() {
+        let mut harness = TestState::new();
+        let state = harness.state();
+
+        state.pointer_location = Point::from((50.0, 50.0));
+        let delta = Point::from((15.5, -5.0));
+        let expected_location = Point::from((65.5, 45.0));
+
+        // Call the method to test
+        state.pointer_motion(0, 0, delta, delta);
+
+        // Check that the internal pointer location is updated
+        assert_eq!(state.pointer_location, expected_location);
+
+        // Check that the pointer's location is also updated
+        let pointer = state.seat.get_pointer().unwrap();
+        assert_eq!(pointer.current_location(), expected_location);
+    }
+
+    #[test]
+    fn pointer_motion_absolute_moves_pointer_location() {
+        let mut harness = TestState::new();
+        let state = harness.state();
+
+        state.set_pointer_location(Point::from((50.0, 50.0)));
+        let expected_location = Point::from((65.5, 45.0));
+
+        state.pointer_motion_absolute(0, expected_location);
+
+        assert_eq!(state.pointer_location, expected_location);
+        let pointer = state.seat.get_pointer().unwrap();
+        assert_eq!(pointer.current_location(), expected_location);
+    }
+
+    #[test]
+    fn clamp_coords_keeps_within_bounds() {
+        let mut harness = TestState::new();
+        let state = harness.state();
+        let output = Output::new(
+            "HEADLESS-1".into(),
+            PhysicalProperties {
+                make: "Virtual".into(),
+                model: "Wolf".into(),
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+            },
+        );
+        output.create_global::<State>(&state.dh);
+        output.change_current_state(
+            Some(smithay::output::Mode {
+                size: (10, 10).into(),
+                refresh: 1000,
+            }),
+            None,
+            None,
+            None,
+        );
+        state.output = Some(output);
+
+        let extreme_pos = Point::from((-100.0, 5000.0));
+        let clamped = state.clamp_coords(extreme_pos);
+
+        // Should clamp negative x to 0 and large y to 10
+        assert!(clamped.x >= 0.0);
+        assert!(clamped.y <= 10.0);
     }
 }

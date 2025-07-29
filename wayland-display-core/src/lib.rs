@@ -1,19 +1,21 @@
-use smithay::backend::drm::CreateDrmNodeError;
 use smithay::backend::SwapBuffersError;
-pub use smithay::reexports::calloop::channel::{channel, Channel, Sender};
+use smithay::backend::drm::CreateDrmNodeError;
+pub use smithay::reexports::calloop::channel::{Channel, Sender, channel};
 
 pub use smithay::backend::allocator::{
-    format::FormatSet, Format as DrmFormat, Fourcc, Modifier as DrmModifier, Vendor as DrmVendor,
+    Format as DrmFormat, Fourcc, Modifier as DrmModifier, Vendor as DrmVendor, format::FormatSet,
 };
 pub use smithay::backend::input::{ButtonState, KeyState};
 use smithay::utils::{Logical, Point};
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::{CString, c_char, c_void};
 use std::str::FromStr;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
 use utils::RenderTarget;
 
 pub(crate) mod comp;
+#[cfg(test)]
+mod tests;
 pub mod utils;
 pub(crate) mod wayland;
 
@@ -214,7 +216,9 @@ impl WaylandDisplay {
     }
 
     pub fn touch_down(&self, id: u32, rel_x: f64, rel_y: f64) {
-        let _ = self.command_tx.send(Command::TouchDown(id, (rel_x, rel_y).into()));
+        let _ = self
+            .command_tx
+            .send(Command::TouchDown(id, (rel_x, rel_y).into()));
     }
 
     pub fn touch_up(&self, id: u32) {
@@ -222,7 +226,9 @@ impl WaylandDisplay {
     }
 
     pub fn touch_motion(&self, id: u32, rel_x: f64, rel_y: f64) {
-        let _ = self.command_tx.send(Command::TouchMotion(id, (rel_x, rel_y).into()));
+        let _ = self
+            .command_tx
+            .send(Command::TouchMotion(id, (rel_x, rel_y).into()));
     }
 
     pub fn touch_cancel(&self) {

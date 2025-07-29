@@ -5,44 +5,45 @@ use smithay::backend::input::AxisSource;
 use smithay::backend::input::TouchSlot;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::reexports::gbm::BufferObjectFlags;
+use smithay::wayland::presentation::Refresh;
 use smithay::{
     backend::{
-        allocator::{dmabuf::Dmabuf, Fourcc},
+        allocator::{Fourcc, dmabuf::Dmabuf},
         drm::DrmNode,
         libinput::LibinputInputBackend,
         renderer::{
+            Bind,
             damage::{Error as DTRError, OutputDamageTracker},
             element::memory::{MemoryBuffer, MemoryRenderBuffer},
-            Bind,
         },
     },
     desktop::{
-        utils::{
-            send_frames_surface_tree, surface_presentation_feedback_flags_from_states,
-            surface_primary_scanout_output, update_surface_primary_scanout_output,
-            OutputPresentationFeedback,
-        },
         PopupManager, Space, Window,
+        utils::{
+            OutputPresentationFeedback, send_frames_surface_tree,
+            surface_presentation_feedback_flags_from_states, surface_primary_scanout_output,
+            update_surface_primary_scanout_output,
+        },
     },
-    input::{keyboard::XkbConfig, pointer::CursorImageStatus, Seat, SeatState},
+    input::{Seat, SeatState, keyboard::XkbConfig, pointer::CursorImageStatus},
     output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
+            EventLoop, Interest, LoopHandle, Mode, PostAction,
             channel::{Channel, Event},
             generic::Generic,
             timer::{TimeoutAction, Timer},
-            EventLoop, Interest, LoopHandle, Mode, PostAction,
         },
         input::Libinput,
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
         wayland_server::{
-            backend::{ClientData, ClientId, DisconnectReason, GlobalId},
             Display, DisplayHandle,
+            backend::{ClientData, ClientId, DisconnectReason, GlobalId},
         },
     },
     utils::{Clock, Logical, Monotonic, Physical, Point, Rectangle, Size, Transform},
     wayland::{
-        compositor::{with_states, CompositorClientState, CompositorState},
+        compositor::{CompositorClientState, CompositorState, with_states},
         dmabuf::{DmabufGlobal, DmabufState},
         output::OutputManagerState,
         pointer_constraints::PointerConstraintsState,
@@ -58,7 +59,7 @@ use smithay::{
 use std::{
     collections::HashSet,
     ffi::CString,
-    sync::{mpsc::Sender, Arc},
+    sync::{Arc, mpsc::Sender},
     time::{Duration, Instant},
 };
 use tracing::debug;
@@ -71,8 +72,8 @@ pub use self::focus::*;
 pub use self::input::*;
 pub use self::rendering::*;
 use crate::utils::allocator::{
-    gst_video_format_to_drm_fourcc, gst_video_format_to_drm_modifier, new_gbm_device, GsBuffer,
-    GsBufferType, GsDmaBuf, GsGlesbuffer, VideoInfoTypes,
+    GsBuffer, GsBufferType, GsDmaBuf, GsGlesbuffer, VideoInfoTypes, gst_video_format_to_drm_fourcc,
+    gst_video_format_to_drm_modifier, new_gbm_device,
 };
 use crate::utils::renderer::setup_renderer;
 use crate::{utils::RenderTarget, wayland::protocols::wl_drm::create_drm_global};
@@ -88,14 +89,14 @@ impl ClientData for ClientState {
 }
 
 #[allow(dead_code)]
-pub(crate) struct State {
-    handle: LoopHandle<'static, State>,
+pub struct State {
+    pub handle: LoopHandle<'static, State>,
     should_quit: bool,
-    clock: Clock<Monotonic>,
+    pub(crate) clock: Clock<Monotonic>,
 
     // render
-    dtr: Option<OutputDamageTracker>,
-    output_buffer: Option<GsBufferType>,
+    pub(crate) dtr: Option<OutputDamageTracker>,
+    pub(crate) output_buffer: Option<GsBufferType>,
     render_node: Option<DrmNode>,
     pub renderer: GlesRenderer,
     dmabuf_global: Option<(DmabufGlobal, GlobalId)>,
@@ -107,7 +108,8 @@ pub(crate) struct State {
     pub seat: Seat<Self>,
     pub space: Space<Window>,
     pub popups: PopupManager,
-    pointer_location: Point<f64, Logical>,
+    pub(crate) pointer_location: Point<f64, Logical>,
+    pub(crate) pointer_absolute_location: Point<f64, Logical>,
     last_pointer_movement: Instant,
     cursor_element: MemoryRenderBuffer,
     pub cursor_state: CursorImageStatus,
@@ -131,128 +133,146 @@ pub(crate) struct State {
     cursor_event_count: i32,
 }
 
+impl State {
+    pub fn new(
+        render_target: &RenderTarget,
+        dh: &DisplayHandle,
+        input_context: &Libinput,
+        event_loop_handle: LoopHandle<'static, State>,
+    ) -> Self {
+        let clock = Clock::new();
+
+        // init state
+        let compositor_state = CompositorState::new::<State>(&dh);
+        let data_device_state = DataDeviceState::new::<State>(&dh);
+        let mut dmabuf_state = DmabufState::new();
+        let output_state = OutputManagerState::new_with_xdg_output::<State>(&dh);
+        let presentation_state = PresentationState::new::<State>(&dh, clock.id() as _);
+        let relative_ptr_state = RelativePointerManagerState::new::<State>(&dh);
+        let pointer_constraints_state = PointerConstraintsState::new::<State>(&dh);
+        let mut seat_state = SeatState::new();
+        let shell_state = XdgShellState::new::<State>(&dh);
+        let viewporter_state = ViewporterState::new::<State>(&dh);
+
+        let render_node: Option<DrmNode> = render_target.clone().into();
+
+        let renderer = setup_renderer(render_node);
+
+        let shm_state = ShmState::new::<State>(&dh, vec![]);
+        let dmabuf_global = if let RenderTarget::Hardware(node) = render_target {
+            let formats = Bind::<Dmabuf>::supported_formats(&renderer)
+                .expect("Failed to query formats")
+                .into_iter()
+                .collect::<Vec<_>>();
+
+            // dma buffer
+            let dmabuf_global = dmabuf_state.create_global::<State>(&dh, formats.clone());
+            // wl_drm (mesa protocol, so we don't need EGL_WL_bind_display)
+            let wl_drm_global = create_drm_global::<State>(
+                &dh,
+                node.dev_path().expect("Failed to determine DrmNode path?"),
+                formats.clone(),
+                &dmabuf_global,
+            );
+
+            Some((dmabuf_global, wl_drm_global))
+        } else {
+            None
+        };
+
+        let cursor_element = MemoryRenderBuffer::from_memory(
+            MemoryBuffer::from_slice(CURSOR_DATA_BYTES, Fourcc::Abgr8888, (64, 64)),
+            1,
+            Transform::Normal,
+            None,
+        );
+
+        let space = Space::default();
+
+        let mut seat = seat_state.new_wl_seat(&dh, "seat-0");
+        seat.add_keyboard(XkbConfig::default(), 200, 25)
+            .expect("Failed to add keyboard to seat");
+        seat.add_pointer();
+        seat.add_touch();
+
+        State {
+            handle: event_loop_handle,
+            should_quit: false,
+            clock,
+
+            renderer,
+            dtr: None,
+            output_buffer: None,
+            render_node,
+            dmabuf_global,
+            video_info: None,
+            last_render: None,
+
+            space,
+            popups: PopupManager::default(),
+            seat,
+            output: None,
+            pointer_location: (0., 0.).into(),
+            pointer_absolute_location: (0., 0.).into(),
+            last_pointer_movement: Instant::now(),
+            cursor_element,
+            cursor_state: CursorImageStatus::default_named(),
+            cursor_event_count: 0,
+            surpressed_keys: HashSet::new(),
+            pending_windows: Vec::new(),
+            input_context: input_context.clone(),
+
+            dh: dh.clone(),
+            compositor_state,
+            data_device_state,
+            dmabuf_state,
+            output_state,
+            presentation_state,
+            relative_ptr_state,
+            pointer_constraints_state,
+            seat_state,
+            shell_state,
+            shm_state,
+            viewporter_state,
+        }
+    }
+}
+
 pub(crate) fn init(
     command_src: Channel<Command>,
     render: impl Into<RenderTarget>,
     devices_tx: Sender<Vec<CString>>,
     envs_tx: Sender<Vec<CString>>,
 ) {
-    let clock = Clock::new();
-    let display = Display::<State>::new().unwrap();
-    let dh = display.handle();
-
-    // init state
-    let compositor_state = CompositorState::new::<State>(&dh);
-    let data_device_state = DataDeviceState::new::<State>(&dh);
-    let mut dmabuf_state = DmabufState::new();
-    let output_state = OutputManagerState::new_with_xdg_output::<State>(&dh);
-    let presentation_state = PresentationState::new::<State>(&dh, clock.id() as _);
-    let relative_ptr_state = RelativePointerManagerState::new::<State>(&dh);
-    let pointer_constraints_state = PointerConstraintsState::new::<State>(&dh);
-    let mut seat_state = SeatState::new();
-    let shell_state = XdgShellState::new::<State>(&dh);
-    let viewporter_state = ViewporterState::new::<State>(&dh);
-
     let render_target = render.into();
+    let _ = devices_tx.send(render_target.clone().as_devices());
     let render_node: Option<DrmNode> = render_target.clone().into();
 
-    let renderer = setup_renderer(render_node);
-    let _ = devices_tx.send(render_target.as_devices());
+    let mut event_loop = EventLoop::<State>::try_new().expect("Unable to create event_loop");
 
-    let shm_state = ShmState::new::<State>(&dh, vec![]);
-    let dmabuf_global = if let RenderTarget::Hardware(node) = render_target {
-        let formats = Bind::<Dmabuf>::supported_formats(&renderer)
-            .expect("Failed to query formats")
-            .into_iter()
-            .collect::<Vec<_>>();
-
-        // dma buffer
-        let dmabuf_global = dmabuf_state.create_global::<State>(&dh, formats.clone());
-        // wl_drm (mesa protocol, so we don't need EGL_WL_bind_display)
-        let wl_drm_global = create_drm_global::<State>(
-            &dh,
-            node.dev_path().expect("Failed to determine DrmNode path?"),
-            formats.clone(),
-            &dmabuf_global,
-        );
-
-        Some((dmabuf_global, wl_drm_global))
-    } else {
-        None
-    };
-
-    let cursor_element = MemoryRenderBuffer::from_memory(
-        MemoryBuffer::from_slice(CURSOR_DATA_BYTES, Fourcc::Abgr8888, (64, 64)),
-        1,
-        Transform::Normal,
-        None,
-    );
-
+    let display = Display::<State>::new().unwrap();
     // init input backend
     let libinput_context = Libinput::new_from_path(NixInterface);
     let input_context = libinput_context.clone();
     let libinput_backend = LibinputInputBackend::new(libinput_context);
 
-    let space = Space::default();
-
-    let mut seat = seat_state.new_wl_seat(&dh, "seat-0");
-    seat.add_keyboard(XkbConfig::default(), 200, 25)
-        .expect("Failed to add keyboard to seat");
-    seat.add_pointer();
-    seat.add_touch();
-
-    let mut event_loop = EventLoop::<State>::try_new().expect("Unable to create event_loop");
-
-    let mut state = State {
-        handle: event_loop.handle(),
-        should_quit: false,
-        clock,
-
-        renderer,
-        dtr: None,
-        output_buffer: None,
-        render_node,
-        dmabuf_global,
-        video_info: None,
-        last_render: None,
-
-        space,
-        popups: PopupManager::default(),
-        seat,
-        output: None,
-        pointer_location: (0., 0.).into(),
-        last_pointer_movement: Instant::now(),
-        cursor_element,
-        cursor_state: CursorImageStatus::default_named(),
-        cursor_event_count: 0,
-        surpressed_keys: HashSet::new(),
-        pending_windows: Vec::new(),
-        input_context,
-
-        dh: display.handle(),
-        compositor_state,
-        data_device_state,
-        dmabuf_state,
-        output_state,
-        presentation_state,
-        relative_ptr_state,
-        pointer_constraints_state,
-        seat_state,
-        shell_state,
-        shm_state,
-        viewporter_state,
-    };
+    let mut state = State::new(
+        &render_target,
+        &display.handle(),
+        &input_context,
+        event_loop.handle(),
+    );
 
     // init event loop
-    event_loop
-        .handle()
+    state
+        .handle
         .insert_source(libinput_backend, move |event, _, state| {
             state.process_input_event(event)
         })
         .unwrap();
 
-    event_loop
-        .handle()
+    state
+        .handle
         .insert_source(command_src, move |event, _, state| {
             match event {
                 Event::Msg(Command::VideoInfo(video_info)) => {
@@ -301,7 +321,9 @@ pub(crate) fn init(
 
                     state.space.map_output(&output, (0, 0));
                     state.dtr = Some(dtr);
-                    state.pointer_location = (size.w as f64 / 2.0, size.h as f64 / 2.0).into();
+                    let position = (size.w as f64 / 2.0, size.h as f64 / 2.0).into();
+                    state.pointer_location = position;
+                    state.pointer_absolute_location = position;
                     match render_target {
                         RenderTarget::Hardware(_) => match video_info.clone() {
                             GstVideoInfo::RAW(base_info) => {
@@ -330,8 +352,7 @@ pub(crate) fn init(
                         .to_i32_round();
                     for window in state.space.elements() {
                         let toplevel = window.toplevel().unwrap();
-                        let max_size = Rectangle::from_loc_and_size(
-                            (0, 0),
+                        let max_size = Rectangle::from_size(
                             with_states(toplevel.wl_surface(), |states| {
                                 states
                                     .data_map
@@ -348,7 +369,7 @@ pub(crate) fn init(
                         );
 
                         let new_size = max_size
-                            .intersection(Rectangle::from_loc_and_size((0, 0), new_size))
+                            .intersection(Rectangle::from_size(new_size))
                             .map(|rect| rect.size);
                         toplevel.with_pending_state(|state| state.size = new_size);
                         toplevel.send_configure();
@@ -424,13 +445,13 @@ pub(crate) fn init(
                                     if rendered_damage {
                                         output_presentation_feedback.presented(
                                             state.clock.now(),
-                                            Duration::from_millis(
+                                            Refresh::Fixed(Duration::from_millis(
                                                 output
                                                     .current_mode()
                                                     .map(|mode| mode.refresh)
                                                     .unwrap_or_default()
                                                     as u64,
-                                            ),
+                                            )),
                                             0,
                                             wp_presentation_feedback::Kind::Vsync,
                                         );
@@ -482,17 +503,23 @@ pub(crate) fn init(
                 Event::Msg(Command::Quit) | Event::Closed => {
                     state.should_quit = true;
                 }
-                Event::Msg(Command::KeyboardInput(keycode, key_state)) => {
+                Event::Msg(Command::KeyboardInput(scancode, key_state)) => {
                     let time: Duration = state.clock.now().into();
+                    let keycode = state.scancode_to_keycode(scancode);
                     state.keyboard_input(time.as_millis() as u32, keycode, key_state);
                 }
                 Event::Msg(Command::PointerMotion(position)) => {
                     let time: Duration = state.clock.now().into();
-                    state.pointer_motion(time.as_nanos() as u64, position, position);
+                    state.pointer_motion(
+                        time.as_millis() as u32,
+                        time.as_nanos() as u64,
+                        position,
+                        position,
+                    );
                 }
                 Event::Msg(Command::PointerMotionAbsolute(position)) => {
                     let time: Duration = state.clock.now().into();
-                    state.pointer_motion_absolute(time.as_nanos() as u64, position);
+                    state.pointer_motion_absolute(time.as_millis() as u32, position);
                 }
                 Event::Msg(Command::PointerButton(btn_code, btn_state)) => {
                     let time: Duration = state.clock.now().into();

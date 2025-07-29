@@ -2,15 +2,14 @@ use std::time::{Duration, Instant};
 
 use super::State;
 use crate::utils::allocator::GsBuffer;
+use smithay::backend::renderer::gles::GlesError;
 use smithay::{
     backend::renderer::{
-        damage::Error as DTRError,
-        damage::RenderOutputResult,
+        ImportAll, ImportMem, Renderer,
+        damage::{Error as OutputDamageTrackerError, RenderOutputResult},
         element::{
-            memory::MemoryRenderBufferRenderElement, surface::WaylandSurfaceRenderElement, Kind,
+            Kind, memory::MemoryRenderBufferRenderElement, surface::WaylandSurfaceRenderElement,
         },
-        gles::GlesRenderer,
-        ImportAll, ImportMem, Renderer, Unbind,
     },
     desktop::space::render_output,
     input::pointer::CursorImageStatus,
@@ -28,7 +27,7 @@ render_elements! {
 impl State {
     pub fn create_frame(
         &mut self,
-    ) -> Result<(gst::Buffer, RenderOutputResult), DTRError<GlesRenderer>> {
+    ) -> Result<(gst::Buffer, RenderOutputResult), OutputDamageTrackerError<GlesError>> {
         assert!(self.output.is_some());
         assert!(self.dtr.is_some());
         assert!(self.video_info.is_some());
@@ -48,7 +47,7 @@ impl State {
                         None,
                         Kind::Cursor,
                     )
-                    .map_err(DTRError::Rendering)?,
+                    .map_err(OutputDamageTrackerError::Rendering)?,
                 )],
                 CursorImageStatus::Surface(wl_surface) => {
                     smithay::backend::renderer::element::surface::render_elements_from_surface_tree(
@@ -68,13 +67,14 @@ impl State {
 
         let mut output_buffer = self.output_buffer.clone().expect("Output buffer not set");
 
-        output_buffer
+        let mut target = output_buffer
             .bind(&mut self.renderer)
-            .map_err(DTRError::Rendering)?;
+            .map_err(OutputDamageTrackerError::Rendering)?;
 
         let render_output_result = render_output(
             self.output.as_ref().unwrap(),
             &mut self.renderer,
+            &mut target,
             1.0,
             0,
             [&self.space],
@@ -83,9 +83,12 @@ impl State {
             [0.0, 0.0, 0.0, 1.0],
         )?;
 
-        let buffer = output_buffer.to_gs_buffer(&mut self.renderer);
+        let buffer = self
+            .output_buffer
+            .clone()
+            .unwrap()
+            .to_gs_buffer(&mut target, &mut self.renderer);
 
-        self.renderer.unbind().map_err(DTRError::Rendering)?;
         Ok((buffer, render_output_result))
     }
 }

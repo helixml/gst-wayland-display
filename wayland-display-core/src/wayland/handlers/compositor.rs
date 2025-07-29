@@ -5,14 +5,14 @@ use smithay::{
     reexports::{
         wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgState,
         wayland_server::{
-            protocol::{wl_buffer::WlBuffer, wl_surface::WlSurface},
             Client,
+            protocol::{wl_buffer::WlBuffer, wl_surface::WlSurface},
         },
     },
-    utils::{SERIAL_COUNTER},
+    utils::SERIAL_COUNTER,
     wayland::{
         buffer::BufferHandler,
-        compositor::{with_states, CompositorClientState, CompositorHandler, CompositorState},
+        compositor::{CompositorClientState, CompositorHandler, CompositorState, with_states},
         seat::WaylandFocus,
         shell::xdg::{SurfaceCachedState, XdgPopupSurfaceData, XdgToplevelSurfaceData},
     },
@@ -60,7 +60,11 @@ impl CompositorHandler for State {
 
                 (
                     attributes_guard.initial_configure_sent,
-                    states.cached_state.get::<SurfaceCachedState>().current().max_size,
+                    states
+                        .cached_state
+                        .get::<SurfaceCachedState>()
+                        .current()
+                        .max_size,
                 )
             });
 
@@ -97,7 +101,7 @@ impl CompositorHandler for State {
                 toplevel.send_configure();
                 self.pending_windows.push(window);
             } else {
-                let loc = (0,0);
+                let loc = (0, 0);
                 self.space.map_element(window.clone(), loc, true);
                 self.seat.get_keyboard().unwrap().set_focus(
                     self,
