@@ -113,7 +113,8 @@ impl Fixture {
 
         self.server.space.map_output(&output, (0, 0));
         self.server.dtr = Some(dtr);
-        self.server.pointer_location = (mode.size.w as f64 / 2.0, mode.size.h as f64 / 2.0).into();
+        self.server
+            .set_pointer_location((mode.size.w as f64 / 2.0, mode.size.h as f64 / 2.0).into());
 
         let video_info = VideoInfo::builder(
             gst_video::VideoFormat::Rgba,

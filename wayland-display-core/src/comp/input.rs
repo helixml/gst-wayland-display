@@ -101,7 +101,7 @@ impl State {
         );
     }
 
-    fn maybe_activate_pointer_constraint(
+    pub(crate) fn maybe_activate_pointer_constraint(
         &self,
         new_under: &Option<(FocusTarget, Point<f64, Logical>)>,
         new_location: Point<f64, Logical>,
@@ -209,7 +209,7 @@ impl State {
 
         // Pointer should only move if it's not locked or confined (and going out of bounds)
         if self.can_pointer_move(&under, possible_pos) {
-            self.pointer_location = possible_pos; // update the location
+            self.set_pointer_location(possible_pos);
 
             // Not sure why, but order here matters (at least when using Sway nested)!!!
             // If we send the motion event after the relative_motion it'll behave oddly
@@ -238,51 +238,26 @@ impl State {
         pointer.frame(self);
     }
 
+    pub fn set_pointer_location(&mut self, location: Point<f64, Logical>) {
+        self.pointer_location = location;
+        self.pointer_absolute_location = location;
+    }
+
     pub fn pointer_motion_absolute(&mut self, event_time_msec: u32, position: Point<f64, Logical>) {
-        self.last_pointer_movement = Instant::now();
-        let serial = SERIAL_COUNTER.next_serial();
-        let mut relative_movement = (
-            position.x - self.pointer_location.x,
-            position.y - self.pointer_location.y,
+        let relative_movement = (
+            position.x - self.pointer_absolute_location.x,
+            position.y - self.pointer_absolute_location.y,
         )
             .into();
-        let possible_pos = self.clamp_coords(position);
 
-        let pointer = self.seat.get_pointer().unwrap();
-        let under = self
-            .space
-            .element_under(self.pointer_location)
-            .map(|(w, pos)| (w.clone().into(), pos.to_f64().clone()));
-
-        // Pointer should only move if it's not locked or confined (and going out of bounds)
-        if self.can_pointer_move(&under, possible_pos) {
-            self.pointer_location = possible_pos;
-
-            pointer.motion(
-                self,
-                under.clone(),
-                &MotionEvent {
-                    location: self.pointer_location,
-                    serial,
-                    time: event_time_msec,
-                },
-            );
-        } else {
-            // If the pointer is locked, the `pointer_location` isn't updated, pass the movement as is
-            relative_movement = position;
-        }
-
-        pointer.relative_motion(
-            self,
-            under,
-            &RelativeMotionEvent {
-                delta: relative_movement,
-                delta_unaccel: relative_movement,
-                utime: event_time_msec as u64 * 1000,
-            },
+        self.pointer_motion(
+            event_time_msec,
+            event_time_msec as u64 * 1000,
+            relative_movement,
+            relative_movement,
         );
-
-        pointer.frame(self);
+        //  pointer_absolute_location should always point to the unclamped position sent by Moonlight
+        self.pointer_absolute_location = position;
     }
 
     pub fn pointer_button(&mut self, event_time_msec: u32, button_code: u32, state: ButtonState) {
@@ -678,7 +653,7 @@ mod tests {
         let mut harness = TestState::new();
         let state = harness.state();
 
-        state.pointer_location = Point::from((50.0, 50.0));
+        state.set_pointer_location(Point::from((50.0, 50.0)));
         let expected_location = Point::from((65.5, 45.0));
 
         state.pointer_motion_absolute(0, expected_location);

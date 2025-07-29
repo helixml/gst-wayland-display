@@ -109,6 +109,7 @@ pub struct State {
     pub space: Space<Window>,
     pub popups: PopupManager,
     pub(crate) pointer_location: Point<f64, Logical>,
+    pub(crate) pointer_absolute_location: Point<f64, Logical>,
     last_pointer_movement: Instant,
     cursor_element: MemoryRenderBuffer,
     pub cursor_state: CursorImageStatus,
@@ -212,6 +213,7 @@ impl State {
             seat,
             output: None,
             pointer_location: (0., 0.).into(),
+            pointer_absolute_location: (0., 0.).into(),
             last_pointer_movement: Instant::now(),
             cursor_element,
             cursor_state: CursorImageStatus::default_named(),
@@ -319,7 +321,9 @@ pub(crate) fn init(
 
                     state.space.map_output(&output, (0, 0));
                     state.dtr = Some(dtr);
-                    state.pointer_location = (size.w as f64 / 2.0, size.h as f64 / 2.0).into();
+                    let position = (size.w as f64 / 2.0, size.h as f64 / 2.0).into();
+                    state.pointer_location = position;
+                    state.pointer_absolute_location = position;
                     match render_target {
                         RenderTarget::Hardware(_) => match video_info.clone() {
                             GstVideoInfo::RAW(base_info) => {

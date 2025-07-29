@@ -14,15 +14,21 @@ use wayland_client::{
         wl_surface,
     },
 };
-use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_locked_pointer_v1::ZwpLockedPointerV1;
-use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1;
-use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1::ZwpPointerConstraintsV1;
-use wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1;
-use wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1;
-use wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1::ZwpRelativePointerV1;
-use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
-use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
-use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
+use wayland_protocols::{
+    wp::{
+        pointer_constraints::zv1::{
+            client::zwp_confined_pointer_v1, client::zwp_locked_pointer_v1::ZwpLockedPointerV1,
+            client::zwp_pointer_constraints_v1,
+            client::zwp_pointer_constraints_v1::ZwpPointerConstraintsV1,
+        },
+        relative_pointer::zv1::client::zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
+        relative_pointer::zv1::client::zwp_relative_pointer_v1,
+        relative_pointer::zv1::client::zwp_relative_pointer_v1::ZwpRelativePointerV1,
+        viewporter::client::wp_viewport::WpViewport,
+        viewporter::client::wp_viewporter::WpViewporter,
+    },
+    xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base},
+};
 
 pub struct WaylandClient {
     conn: Connection,
@@ -50,6 +56,7 @@ struct State {
     relative_pointer_manager: Option<ZwpRelativePointerManagerV1>,
 
     pointer: Option<wl_pointer::WlPointer>,
+    pointer_confined: bool,
     keyboard: Option<wl_keyboard::WlKeyboard>,
     windows: Vec<Window>,
     pub mouse_events: Vec<MouseEvents>,
@@ -170,6 +177,7 @@ impl WaylandClient {
             relative_pointer_manager: None,
 
             pointer: None,
+            pointer_confined: false,
             keyboard: None,
             windows: Vec::new(),
             mouse_events: Vec::new(),
@@ -234,7 +242,33 @@ impl WaylandClient {
     /// Note that while a pointer is locked, the wl_pointer objects of the corresponding seat
     /// will not emit any wl_pointer.motion events, but relative motion events will still be emitted
     /// via wp_relative_pointer objects of the same seat. Use `get_relative_pointer()` to receive them
-    pub fn lock_pointer(&mut self, x: i32, y: i32, width: i32, height: i32) -> ZwpLockedPointerV1 {
+    pub fn lock_pointer(&mut self) -> ZwpLockedPointerV1 {
+        let qh = self.qh.clone();
+        let pointer = self.state.pointer.as_ref().unwrap().clone();
+        let window = self.state.windows.last_mut().unwrap();
+
+        self.state
+            .pointer_constraints
+            .as_ref()
+            .unwrap()
+            .lock_pointer(
+                &window.surface,
+                &pointer,
+                None,
+                zwp_pointer_constraints_v1::Lifetime::Oneshot,
+                &qh,
+                (),
+            )
+    }
+
+    /// Request and acquire a [pointer confinement region](https://wayland.app/protocols/pointer-constraints-unstable-v1#zwp_pointer_constraints_v1:request:confine_pointer)
+    pub fn confine_pointer(
+        &mut self,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    ) -> zwp_confined_pointer_v1::ZwpConfinedPointerV1 {
         let qh = self.qh.clone();
         let pointer = self.state.pointer.as_ref().unwrap().clone();
         let window = self.state.windows.last_mut().unwrap();
@@ -250,14 +284,18 @@ impl WaylandClient {
             .pointer_constraints
             .as_ref()
             .unwrap()
-            .lock_pointer(
+            .confine_pointer(
                 &window.surface,
                 &pointer,
                 Some(&region),
-                zwp_pointer_constraints_v1::Lifetime::Oneshot,
+                zwp_pointer_constraints_v1::Lifetime::Persistent,
                 &qh,
                 (),
             )
+    }
+
+    pub fn is_confined(&self) -> bool {
+        self.state.pointer_confined
     }
 }
 
@@ -502,5 +540,27 @@ impl Dispatch<ZwpRelativePointerV1, ()> for State {
     ) {
         tracing::debug!("{:?}", event);
         state.mouse_events.push(MouseEvents::Relative(event));
+    }
+}
+
+impl Dispatch<zwp_confined_pointer_v1::ZwpConfinedPointerV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &zwp_confined_pointer_v1::ZwpConfinedPointerV1,
+        event: zwp_confined_pointer_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        tracing::debug!("{:?}", event);
+        match event {
+            zwp_confined_pointer_v1::Event::Confined => {
+                state.pointer_confined = true;
+            }
+            zwp_confined_pointer_v1::Event::Unconfined => {
+                state.pointer_confined = false;
+            }
+            _ => {}
+        }
     }
 }

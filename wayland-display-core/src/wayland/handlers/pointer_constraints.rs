@@ -13,9 +13,11 @@ impl PointerConstraintsHandler for State {
             .map(|x| &*(x.wl_surface().unwrap()) == surface)
             .unwrap_or(false)
         {
-            with_pointer_constraint(surface, pointer, |constraint| {
-                constraint.unwrap().activate();
-            });
+            let under = self
+                .space
+                .element_under(self.pointer_location)
+                .map(|(w, pos)| (w.clone().into(), pos.to_f64()));
+            self.maybe_activate_pointer_constraint(&under, self.pointer_location);
         }
     }
 
