@@ -241,7 +241,7 @@ impl State {
     pub fn pointer_motion_absolute(&mut self, event_time_msec: u32, position: Point<f64, Logical>) {
         self.last_pointer_movement = Instant::now();
         let serial = SERIAL_COUNTER.next_serial();
-        let relative_movement = (
+        let mut relative_movement = (
             position.x - self.pointer_location.x,
             position.y - self.pointer_location.y,
         )
@@ -267,6 +267,9 @@ impl State {
                     time: event_time_msec,
                 },
             );
+        } else {
+            // If the pointer is locked, the `pointer_location` isn't updated, pass the movement as is
+            relative_movement = position;
         }
 
         pointer.relative_motion(
@@ -580,10 +583,10 @@ mod tests {
     use crate::comp::State;
     use crate::utils::RenderTarget;
     use smithay::input::keyboard::xkb;
+    use smithay::output::{Output, PhysicalProperties, Subpixel};
     use smithay::reexports::calloop::EventLoop;
     use smithay::reexports::input::Libinput;
     use smithay::{reexports::wayland_server::Display, utils::Point};
-    use smithay::output::{Output, PhysicalProperties, Subpixel};
 
     struct TestState {
         state: State,
@@ -703,7 +706,10 @@ mod tests {
             Some(smithay::output::Mode {
                 size: (10, 10).into(),
                 refresh: 1000,
-            }), None, None, None
+            }),
+            None,
+            None,
+            None,
         );
         state.output = Some(output);
 

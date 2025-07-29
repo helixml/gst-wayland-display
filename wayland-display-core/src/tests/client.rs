@@ -17,6 +17,9 @@ use wayland_client::{
 use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_locked_pointer_v1::ZwpLockedPointerV1;
 use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1;
 use wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1::ZwpPointerConstraintsV1;
+use wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1;
+use wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1;
+use wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_v1::ZwpRelativePointerV1;
 use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
@@ -29,6 +32,12 @@ pub struct WaylandClient {
     state: State,
 }
 
+#[derive(Debug)]
+pub enum MouseEvents {
+    Pointer(wl_pointer::Event),
+    Relative(zwp_relative_pointer_v1::Event),
+}
+
 struct State {
     qh: QueueHandle<State>,
 
@@ -38,9 +47,12 @@ struct State {
     viewporter: Option<WpViewporter>,
     seat: Option<wl_seat::WlSeat>,
     pointer_constraints: Option<ZwpPointerConstraintsV1>,
+    relative_pointer_manager: Option<ZwpRelativePointerManagerV1>,
 
+    pointer: Option<wl_pointer::WlPointer>,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
     windows: Vec<Window>,
-    pub mouse_events: Vec<wl_pointer::Event>,
+    pub mouse_events: Vec<MouseEvents>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -113,6 +125,11 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                     state.pointer_constraints =
                         Some(registry.bind::<ZwpPointerConstraintsV1, _, _>(name, version, qh, ()))
                 }
+                "zwp_relative_pointer_manager_v1" => {
+                    state.relative_pointer_manager = Some(
+                        registry.bind::<ZwpRelativePointerManagerV1, _, _>(name, version, qh, ()),
+                    );
+                }
                 _ => {}
             }
         }
@@ -129,6 +146,7 @@ delegate_noop!(State: ignore WpViewporter);
 delegate_noop!(State: ignore WpViewport);
 delegate_noop!(State: ignore ZwpPointerConstraintsV1);
 delegate_noop!(State: ignore ZwpLockedPointerV1);
+delegate_noop!(State: ignore ZwpRelativePointerManagerV1);
 
 impl WaylandClient {
     pub fn new(w_socket: UnixStream) -> Self {
@@ -149,7 +167,10 @@ impl WaylandClient {
             viewporter: None,
             seat: None,
             pointer_constraints: None,
+            relative_pointer_manager: None,
 
+            pointer: None,
+            keyboard: None,
             windows: Vec::new(),
             mouse_events: Vec::new(),
         };
@@ -193,14 +214,30 @@ impl WaylandClient {
         window.ack_last_and_commit();
     }
 
-    pub fn get_client_events(&mut self) -> &mut Vec<wl_pointer::Event> {
+    pub fn get_client_events(&mut self) -> &mut Vec<MouseEvents> {
         self.state.mouse_events.as_mut()
     }
 
+    /// Call this to start receiving Relative events in `get_client_events()`
+    pub fn get_relative_pointer(&mut self) -> ZwpRelativePointerV1 {
+        let qh = self.qh.clone();
+        let pointer = self.state.pointer.as_ref().unwrap();
+        self.state
+            .relative_pointer_manager
+            .as_ref()
+            .unwrap()
+            .get_relative_pointer(pointer, &qh, ())
+    }
+
+    /// Requests and acquire a [pointer lock](https://wayland.app/protocols/pointer-constraints-unstable-v1#zwp_pointer_constraints_v1:request:lock_pointer)
+    ///
+    /// Note that while a pointer is locked, the wl_pointer objects of the corresponding seat
+    /// will not emit any wl_pointer.motion events, but relative motion events will still be emitted
+    /// via wp_relative_pointer objects of the same seat. Use `get_relative_pointer()` to receive them
     pub fn lock_pointer(&mut self, x: i32, y: i32, width: i32, height: i32) -> ZwpLockedPointerV1 {
         let qh = self.qh.clone();
+        let pointer = self.state.pointer.as_ref().unwrap().clone();
         let window = self.state.windows.last_mut().unwrap();
-        let pointer = self.state.seat.as_ref().unwrap().get_pointer(&qh, ());
         let region = self
             .state
             .compositor
@@ -406,7 +443,7 @@ impl Dispatch<xdg_toplevel::XdgToplevel, ()> for State {
 
 impl Dispatch<wl_seat::WlSeat, ()> for State {
     fn event(
-        _: &mut Self,
+        state: &mut Self,
         seat: &wl_seat::WlSeat,
         event: wl_seat::Event,
         _: &(),
@@ -418,10 +455,10 @@ impl Dispatch<wl_seat::WlSeat, ()> for State {
         } = event
         {
             if capabilities.contains(wl_seat::Capability::Keyboard) {
-                seat.get_keyboard(qh, ());
+                state.keyboard = Some(seat.get_keyboard(qh, ()));
             }
             if capabilities.contains(wl_seat::Capability::Pointer) {
-                seat.get_pointer(qh, ());
+                state.pointer = Some(seat.get_pointer(qh, ()));
             }
         }
     }
@@ -436,7 +473,7 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for State {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        tracing::info!("{:?}", event);
+        tracing::debug!("{:?}", event);
     }
 }
 
@@ -449,7 +486,21 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        tracing::info!("{:?}", event);
-        state.mouse_events.push(event);
+        tracing::debug!("{:?}", event);
+        state.mouse_events.push(MouseEvents::Pointer(event));
+    }
+}
+
+impl Dispatch<ZwpRelativePointerV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &ZwpRelativePointerV1,
+        event: zwp_relative_pointer_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        tracing::debug!("{:?}", event);
+        state.mouse_events.push(MouseEvents::Relative(event));
     }
 }

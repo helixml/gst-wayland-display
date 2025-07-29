@@ -14,10 +14,10 @@ use std::thread::JoinHandle;
 use utils::RenderTarget;
 
 pub(crate) mod comp;
-pub mod utils;
-pub(crate) mod wayland;
 #[cfg(test)]
 mod tests;
+pub mod utils;
+pub(crate) mod wayland;
 
 pub use crate::utils::video_info::GstVideoInfo;
 
