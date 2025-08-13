@@ -17,7 +17,7 @@ use tracing_subscriber::Registry;
 use tracing_subscriber::layer::SubscriberExt;
 use waylanddisplaycore::{
     ButtonState, Channel, Command, DrmFormat, DrmModifier, GstVideoInfo, KeyState, Sender,
-    WaylandDisplay, channel,
+    WaylandDisplay, channel, utils::device::PCIVendor,
 };
 
 use crate::utils::{CAT, GstLayer};
@@ -46,6 +46,7 @@ impl Default for WaylandDisplaySrc {
 pub struct Settings {
     render_node: Option<String>,
     input_devices: Vec<String>,
+    disable_intel_workaround: bool,
 }
 
 pub struct State {
@@ -189,6 +190,13 @@ impl ObjectImpl for WaylandDisplaySrc {
                     .blurb("Input device to use (e.g. /dev/input/event0")
                     .construct()
                     .build(),
+                glib::ParamSpecBoolean::builder("disable-intel-workaround")
+                    .nick("Disable Intel workaround")
+                    .blurb(
+                        "Disable workaround for Intel GPUs that tries to fix DRM modifier issues",
+                    )
+                    .default_value(false)
+                    .build(),
             ]
         });
 
@@ -221,6 +229,11 @@ impl ObjectImpl for WaylandDisplaySrc {
                     settings.input_devices.push(actual_val.unwrap());
                 }
             }
+            "disable-intel-workaround" => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.disable_intel_workaround =
+                    value.get::<bool>().expect("Type checked upstream");
+            }
             _ => unreachable!(),
         }
     }
@@ -242,6 +255,10 @@ impl ObjectImpl for WaylandDisplaySrc {
             "keyboard" => {
                 let settings = self.settings.lock().unwrap();
                 settings.input_devices.join(",").to_value()
+            }
+            "disable-intel-workaround" => {
+                let settings = self.settings.lock().unwrap();
+                settings.disable_intel_workaround.to_value()
             }
             _ => unreachable!(),
         }
@@ -355,7 +372,28 @@ impl BaseSrcImpl for WaylandDisplaySrc {
             None => Default::default(),
             Some(state) => {
                 let dma_formats = state.display.get_supported_dma_formats();
-                dma_formats.iter().filter_map(drm_to_gst_format).collect()
+
+                let settings = self.settings.lock().unwrap();
+                let mut disable_workaround = settings.disable_intel_workaround;
+                if let Some(render_device) = state.display.get_render_device() {
+                    // Only enable workaround for DG2 (Alchemist) Intel GPUs, Battlemage and later
+                    // have reportedly no issues with the DRM modifier and don't require workaround.
+                    if !disable_workaround && *render_device.pci_vendor() == PCIVendor::Intel {
+                        if !render_device.device_name().contains("DG2") {
+                            tracing::info!(
+                                "Disabling workaround for non-Alchemist (DG2) Intel GPU"
+                            );
+                            disable_workaround = true;
+                        } else if !disable_workaround {
+                            tracing::info!("Enabling workaround for Alchemist (DG2) Intel GPU");
+                        }
+                    }
+                }
+
+                dma_formats
+                    .iter()
+                    .filter_map(|format| drm_to_gst_format(format, disable_workaround))
+                    .collect()
             }
         };
 
@@ -494,7 +532,7 @@ impl PushSrcImpl for WaylandDisplaySrc {
     }
 }
 
-fn drm_to_gst_format(format: &DrmFormat) -> Option<String> {
+fn drm_to_gst_format(format: &DrmFormat, disable_workaround: bool) -> Option<String> {
     let video_format = format.code.to_string();
     let video_format = video_format.trim();
     if format.modifier == DrmModifier::Linear {
@@ -502,7 +540,7 @@ fn drm_to_gst_format(format: &DrmFormat) -> Option<String> {
     } else {
         match format.modifier {
             DrmModifier::Invalid => None,
-            DrmModifier::Unrecognized(0x0100000000000009) => {
+            DrmModifier::Unrecognized(0x0100000000000009) if !disable_workaround => {
                 // NOTE: This is a workaround for the i915 4-tiled modifiers
                 //       not being advertised by gstreamer elements.
                 // - In this part we tell we map any 4-tiled modifiers
@@ -536,26 +574,35 @@ mod tests {
         test_init();
 
         assert_eq!(
-            super::drm_to_gst_format(&DrmFormat {
-                code: waylanddisplaycore::Fourcc::Abgr8888,
-                modifier: waylanddisplaycore::DrmModifier::Linear
-            }),
+            super::drm_to_gst_format(
+                &DrmFormat {
+                    code: waylanddisplaycore::Fourcc::Abgr8888,
+                    modifier: waylanddisplaycore::DrmModifier::Linear
+                },
+                false
+            ),
             Some("AB24".to_string())
         );
 
         assert_eq!(
-            super::drm_to_gst_format(&DrmFormat {
-                code: waylanddisplaycore::Fourcc::R8,
-                modifier: waylanddisplaycore::DrmModifier::Linear
-            }),
+            super::drm_to_gst_format(
+                &DrmFormat {
+                    code: waylanddisplaycore::Fourcc::R8,
+                    modifier: waylanddisplaycore::DrmModifier::Linear
+                },
+                false
+            ),
             Some("R8  ".to_string())
         );
 
         assert_eq!(
-            super::drm_to_gst_format(&DrmFormat {
-                code: waylanddisplaycore::Fourcc::Rgba8888,
-                modifier: waylanddisplaycore::DrmModifier::Nvidia_16bx2_block_eight_gob
-            }),
+            super::drm_to_gst_format(
+                &DrmFormat {
+                    code: waylanddisplaycore::Fourcc::Rgba8888,
+                    modifier: waylanddisplaycore::DrmModifier::Nvidia_16bx2_block_eight_gob
+                },
+                false
+            ),
             Some("RA24:0x0300000000000013".to_string())
         );
     }
