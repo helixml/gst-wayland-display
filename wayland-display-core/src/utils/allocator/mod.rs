@@ -112,7 +112,10 @@ impl GsDmaBuf {
                 video_info,
                 gst_allocator: DmaBufAllocator::new(),
             }),
-            Err(_) => None,
+            Err(_) => {
+                tracing::warn!("Failed to create DMA buffer: {}", result.unwrap_err());
+                None
+            }
         }
     }
 }

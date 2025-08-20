@@ -586,11 +586,13 @@ pub(crate) fn init(
                 Event::Msg(Command::GetRenderDevice(sender)) => {
                     let render_device: Option<GPUDevice> = match &state.render_node {
                         Some(node) => {
-                            if let Ok(gpu_dev) = GPUDevice::try_from(*node) {
-                                Some(gpu_dev)
-                            } else {
-                                tracing::warn!("Failed to create GPUDevice from render node.");
-                                None
+                            let result = GPUDevice::try_from(*node);
+                            match result {
+                                Ok(device) => Some(device),
+                                Err(err) => {
+                                    tracing::warn!("Error during GetRenderDevice: {}", err);
+                                    None
+                                }
                             }
                         }
                         None => None,

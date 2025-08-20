@@ -44,8 +44,7 @@ impl std::fmt::Display for GPUDevice {
 }
 
 pub fn enumerate_gpu_devices() -> Result<Vec<GPUDevice>, Box<dyn Error>> {
-    EGLDevice::enumerate()
-        .expect("Failed to enumerate EGLDevices")
+    EGLDevice::enumerate()?
         .filter(|dev| !dev.is_software())
         .map(|dev| -> Result<GPUDevice, Box<dyn Error>> {
             let drm_path = dev.drm_device_path()?;
@@ -53,7 +52,6 @@ pub fn enumerate_gpu_devices() -> Result<Vec<GPUDevice>, Box<dyn Error>> {
             let minor = drm_node.minor();
             let vendor_str =
                 std::fs::read_to_string(format!("/sys/class/drm/card{}/device/vendor", minor))?;
-            // trim 0x prefix and final \n
             let vendor_str = vendor_str.trim_start_matches("0x").trim_end_matches('\n');
             let vendor = u32::from_str_radix(&vendor_str, 16)?;
 
@@ -61,10 +59,14 @@ pub fn enumerate_gpu_devices() -> Result<Vec<GPUDevice>, Box<dyn Error>> {
                 std::fs::read_to_string(format!("/sys/class/drm/card{}/device/device", minor))?;
             let device_id = device_id.trim_start_matches("0x").trim_end_matches('\n');
 
-            // Look up in PCI database
-            let pci_ids = std::fs::read_to_string("/usr/share/hwdata/pci.ids")?;
-            let device_name =
-                parse_pci_ids(&pci_ids, vendor_str, device_id).unwrap_or("".to_owned());
+            // Look up in hwdata PCI database
+            let device_name = match std::fs::read_to_string("/usr/share/hwdata/pci.ids") {
+                Ok(pci_ids) => parse_pci_ids(&pci_ids, device_id).unwrap_or("".to_owned()),
+                Err(e) => {
+                    tracing::warn!("Failed to read /usr/share/hwdata/pci.ids: {}", e);
+                    "".to_owned()
+                }
+            };
 
             Ok(GPUDevice {
                 drm_node,
@@ -75,22 +77,12 @@ pub fn enumerate_gpu_devices() -> Result<Vec<GPUDevice>, Box<dyn Error>> {
         .collect()
 }
 
-fn parse_pci_ids(pci_data: &str, vendor_id: &str, device_id: &str) -> Option<String> {
-    let mut current_vendor = None;
-    let mut vendor_name = None;
-
+fn parse_pci_ids(pci_data: &str, device_id: &str) -> Option<String> {
     for line in pci_data.lines() {
-        if let Some(stripped) = line.strip_prefix(vendor_id) {
+        if let Some(stripped) = line.strip_prefix(&format!("\t{}", device_id)) {
             if stripped.starts_with("  ") {
-                vendor_name = Some(stripped.trim());
-                current_vendor = Some(vendor_id);
-            }
-        } else if current_vendor == Some(vendor_id) {
-            if let Some(stripped) = line.strip_prefix(&format!("\t{}", device_id)) {
-                if stripped.starts_with("  ") {
-                    let device_name = stripped.trim();
-                    return Some(format!("{} {}", vendor_name?, device_name));
-                }
+                let device_name = stripped.trim();
+                return Some(device_name.to_owned());
             }
         }
     }
