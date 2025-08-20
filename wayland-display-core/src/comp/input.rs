@@ -198,6 +198,7 @@ impl State {
         delta: Point<f64, Logical>,
         delta_unaccelerated: Point<f64, Logical>,
     ) {
+        self.last_pointer_movement = Instant::now();
         let serial = SERIAL_COUNTER.next_serial();
         let pointer = self.seat.get_pointer().unwrap();
         let under = self
