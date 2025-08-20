@@ -1,7 +1,7 @@
 use crate::utils::device::PCIVendor;
 use smithay::backend::drm::DrmNode;
-use smithay::backend::vulkan::version::Version;
-use smithay::backend::vulkan::{Instance, PhysicalDevice};
+use smithay::backend::egl::EGLDevice;
+use std::error::Error;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GPUDevice {
@@ -43,43 +43,48 @@ impl std::fmt::Display for GPUDevice {
     }
 }
 
-pub fn enumerate_gpu_devices() -> Result<Vec<GPUDevice>, Box<dyn std::error::Error>> {
-    let mut devices = Vec::new();
+pub fn enumerate_gpu_devices() -> Result<Vec<GPUDevice>, Box<dyn Error>> {
+    EGLDevice::enumerate()?
+        .filter(|dev| !dev.is_software())
+        .map(|dev| -> Result<GPUDevice, Box<dyn Error>> {
+            let drm_path = dev.drm_device_path()?;
+            let drm_node = DrmNode::from_path(drm_path)?;
+            let minor = drm_node.minor();
+            let vendor_str =
+                std::fs::read_to_string(format!("/sys/class/drm/card{}/device/vendor", minor))?;
+            let vendor_str = vendor_str.trim_start_matches("0x").trim_end_matches('\n');
+            let vendor = u32::from_str_radix(&vendor_str, 16)?;
 
-    let instance = Instance::new(Version::VERSION_1_1, None)?;
+            let device_id =
+                std::fs::read_to_string(format!("/sys/class/drm/card{}/device/device", minor))?;
+            let device_id = device_id.trim_start_matches("0x").trim_end_matches('\n');
 
-    for p_dev in PhysicalDevice::enumerate(&instance)? {
-        // Add only devices that support DrmNode (filters out software devices)
-        let drm_node: DrmNode = if let Ok(render_node) = p_dev.render_node()
-            && let Some(render_node) = render_node
-        {
-            render_node
-        } else if let Ok(primary_node) = p_dev.primary_node()
-            && let Some(primary_node) = primary_node
-        {
-            primary_node
-        } else {
-            continue;
-        };
+            // Look up in hwdata PCI database
+            let device_name = match std::fs::read_to_string("/usr/share/hwdata/pci.ids") {
+                Ok(pci_ids) => parse_pci_ids(&pci_ids, device_id).unwrap_or("".to_owned()),
+                Err(e) => {
+                    tracing::warn!("Failed to read /usr/share/hwdata/pci.ids: {}", e);
+                    "".to_owned()
+                }
+            };
 
-        let properties = p_dev.properties();
-        let pci_vendor = PCIVendor::try_from(properties.vendor_id);
+            Ok(GPUDevice {
+                drm_node,
+                pci_vendor: PCIVendor::try_from(vendor)?,
+                device_name,
+            })
+        })
+        .collect()
+}
 
-        // array of c_char's (i8) needs conversion to String
-        let device_name = properties
-            .device_name
-            .as_slice()
-            .iter()
-            .take_while(|&&c| c != 0)
-            .map(|&c| c as u8 as char)
-            .collect::<String>();
-
-        devices.push(GPUDevice {
-            drm_node,
-            pci_vendor: pci_vendor.unwrap_or(PCIVendor::Unknown),
-            device_name,
-        });
+fn parse_pci_ids(pci_data: &str, device_id: &str) -> Option<String> {
+    for line in pci_data.lines() {
+        if let Some(stripped) = line.strip_prefix(&format!("\t{}", device_id)) {
+            if stripped.starts_with("  ") {
+                let device_name = stripped.trim();
+                return Some(device_name.to_owned());
+            }
+        }
     }
-
-    Ok(devices)
+    None
 }
