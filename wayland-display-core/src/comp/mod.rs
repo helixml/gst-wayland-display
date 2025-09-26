@@ -3,8 +3,10 @@ use gst_video::VideoInfo;
 use smithay::backend::allocator::format::FormatSet;
 use smithay::backend::input::AxisSource;
 use smithay::backend::input::TouchSlot;
+use smithay::backend::renderer::ImportEgl;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::reexports::gbm::BufferObjectFlags;
+use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
 use smithay::wayland::presentation::Refresh;
 use smithay::{
     backend::{
@@ -144,7 +146,7 @@ impl State {
         let clock = Clock::new();
 
         // init state
-        let compositor_state = CompositorState::new::<State>(&dh);
+        let compositor_state = CompositorState::new_v6::<State>(&dh);
         let data_device_state = DataDeviceState::new::<State>(&dh);
         let mut dmabuf_state = DmabufState::new();
         let output_state = OutputManagerState::new_with_xdg_output::<State>(&dh);
@@ -157,7 +159,7 @@ impl State {
 
         let render_node: Option<DrmNode> = render_target.clone().into();
 
-        let renderer = setup_renderer(render_node);
+        let mut renderer = setup_renderer(render_node);
 
         let shm_state = ShmState::new::<State>(&dh, vec![]);
         let dmabuf_global = if let RenderTarget::Hardware(node) = render_target {
@@ -166,8 +168,21 @@ impl State {
                 .into_iter()
                 .collect::<Vec<_>>();
 
-            // dma buffer
-            let dmabuf_global = dmabuf_state.create_global::<State>(&dh, formats.clone());
+            let dmabuf_default_feedback =
+                DmabufFeedbackBuilder::new(node.dev_id(), formats.clone()).build();
+
+            let dmabuf_global = if let Ok(default_feedback) = dmabuf_default_feedback {
+                dmabuf_state.create_global_with_default_feedback::<State>(&dh, &default_feedback)
+            } else {
+                tracing::warn!("Failed to create default feedback for dmabuf, falling back to v3");
+                dmabuf_state.create_global::<State>(&dh, formats.clone())
+            };
+
+            match renderer.bind_wl_display(&dh) {
+                Ok(_) => tracing::info!("EGL hardware-acceleration enabled"),
+                Err(err) => tracing::info!(?err, "Failed to initialize EGL hardware-acceleration"),
+            }
+
             // wl_drm (mesa protocol, so we don't need EGL_WL_bind_display)
             let wl_drm_global = create_drm_global::<State>(
                 &dh,
