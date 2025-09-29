@@ -1,3 +1,5 @@
+mod gst_cuda_ffi;
+
 use crate::DrmModifier;
 use gst::Buffer as GstBuffer;
 use gst_video::{VideoFormat, VideoInfo, VideoInfoDmaDrm, VideoMeta};
