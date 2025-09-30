@@ -324,6 +324,7 @@ pub fn gst_video_format_to_drm_modifier(format: &VideoInfoDmaDrm) -> Option<DrmM
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::allocator::gst_cuda_ffi::{CUDAImage, EGLImage};
     use crate::utils::renderer::setup_renderer;
     use crate::utils::tests::test_init;
     use smithay::backend::renderer::Frame;
@@ -602,6 +603,97 @@ mod tests {
                 // R, G, B, A
                 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 0,
                 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255
+            ]
+        );
+
+        let buf_meta = gst_buffer
+            .meta::<VideoMeta>()
+            .expect("Failed to get buffer meta");
+        assert_eq!(buf_meta.width(), 10);
+        assert_eq!(buf_meta.height(), 10);
+        assert_eq!(buf_meta.n_planes(), 1);
+    }
+
+    #[test]
+    fn test_cuda_buffer() {
+        test_init();
+
+        let render_node =
+            DrmNode::from_path("/dev/dri/renderD129").expect("Failed to create render node");
+        let mut renderer = setup_renderer(Some(render_node));
+        let caps = gst_video::VideoCapsBuilder::new()
+            .features([gstreamer_allocators::CAPS_FEATURE_MEMORY_DMABUF])
+            .format(gst_video::VideoFormat::DmaDrm)
+            .field("drm-format", "AB24:0x0300000000606010")
+            .height(10)
+            .width(10)
+            .pixel_aspect_ratio(1.into())
+            .framerate(gst::Fraction::new(30, 1))
+            .build();
+        assert!(caps.is_fixed()); // Required to pass gst_video_is_dma_drm_caps()
+        let drm_video_info =
+            VideoInfoDmaDrm::from_caps(&caps).expect("Failed to create video info");
+
+        assert_eq!(
+            gst_video_format_to_drm_fourcc(&drm_video_info),
+            Some(DrmFourcc::Abgr8888)
+        );
+        assert_eq!(
+            gst_video_format_to_drm_modifier(&drm_video_info),
+            Some(Modifier::Unrecognized(0x0300000000606010))
+        );
+
+        let raw_buffer = GsDmaBuf::new(render_node, drm_video_info);
+        assert!(raw_buffer.is_some());
+
+        let mut buffer = GsBufferType::DMA(raw_buffer.clone().unwrap());
+
+        let buffer_data = match &buffer {
+            GsBufferType::RAW(b) => BufferData::RAW {
+                video_info: b.video_info.clone(),
+                format: b.format,
+            },
+            GsBufferType::DMA(b) => BufferData::DMA {
+                video_info: b.video_info.clone(),
+                gst_allocator: b.gst_allocator.clone(),
+                buffer: b.buffer.clone(),
+            },
+        };
+
+        let bind_result = buffer.bind(&mut renderer);
+        assert!(bind_result.is_ok());
+
+        let mut dmabuf = raw_buffer.clone().unwrap().buffer;
+
+        render_into(&mut renderer, &mut dmabuf, 10, 10);
+        let gst_buffer = to_gs_buffer(buffer_data, &mut bind_result.unwrap(), &mut renderer);
+        let gst_buffer_size = gst_buffer.size();
+        assert!(gst_buffer_size >= 4096); // There might be padding but it should at least contain our data
+
+        {
+            let egl_image =
+                EGLImage::from(&dmabuf).expect("Failed to create EGLImage from DMA-BUF");
+
+            // TODO: cuda_device_id from the render node
+            //       this might be helpful: https://github.com/elFarto/nvidia-vaapi-driver/blob/3d46e26818a9e0eff26a7cd0db581316029d953b/src/export-buf.c#L121-L201
+            let cuda_image =
+                CUDAImage::from(&egl_image, 0).expect("Failed to create CUDA image from EGLImage");
+
+            // TODO: we've got a CUDAImage, now let's wrap it in a Gstreamer CUDAMemory buffer
+        }
+
+        let read_buf = gst_buffer
+            .clone()
+            .into_mapped_buffer_readable()
+            .expect("Failed to map buffer");
+        let plane_data = read_buf.as_slice();
+
+        assert_eq!(plane_data.len(), gst_buffer_size);
+        assert_eq!(
+            plane_data[0..10 * 4],
+            [
+                255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
+                255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255
             ]
         );
 

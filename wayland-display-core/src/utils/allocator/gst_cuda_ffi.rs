@@ -4,9 +4,12 @@
 
 use gst::ffi as gst_ffi;
 use gst::glib::ffi as glib_ffi;
-use std::ffi::{c_void};
+use smithay::backend::allocator::Buffer;
+use smithay::backend::allocator::dmabuf::Dmabuf;
+use std::ffi::c_void;
+use std::os::fd::AsRawFd;
 use std::os::raw::{c_char, c_int, c_uint};
-
+use std::ptr;
 
 // GStreamer CUDA types
 #[repr(C)]
@@ -38,9 +41,9 @@ pub type CUresult = c_uint;
 
 // EGL types
 pub type EGLDisplay = *mut c_void;
+pub type EGLContext = *mut c_void;
 pub type EGLImageKHR = *mut c_void;
 pub type EGLint = i32;
-pub type EGLAttrib = isize;
 
 // CUDA constants
 pub const CUDA_SUCCESS: CUresult = 0;
@@ -51,6 +54,7 @@ pub const CU_GRAPHICS_REGISTER_FLAGS_WRITE_DISCARD: c_uint = 0x02;
 // EGL constants
 pub const EGL_NO_IMAGE_KHR: EGLImageKHR = std::ptr::null_mut();
 pub const EGL_LINUX_DMA_BUF_EXT: u32 = 0x3270;
+pub const EGL_GL_TEXTURE_2D_KHR: u32 = 0x30B1;
 pub const EGL_DMA_BUF_PLANE0_FD_EXT: EGLint = 0x3272;
 pub const EGL_DMA_BUF_PLANE0_OFFSET_EXT: EGLint = 0x3273;
 pub const EGL_DMA_BUF_PLANE0_PITCH_EXT: EGLint = 0x3274;
@@ -101,6 +105,7 @@ unsafe extern "C" {
 #[link(name = "EGL")]
 unsafe extern "C" {
     pub fn eglGetCurrentDisplay() -> EGLDisplay;
+    pub fn eglGetCurrentContext() -> EGLContext;
     pub fn eglGetProcAddress(procname: *const c_char) -> *mut c_void;
 
     // EGLImage functions (extension, loaded via eglGetProcAddress)
@@ -113,7 +118,7 @@ pub type PFN_eglCreateImageKHR = unsafe extern "C" fn(
     ctx: *mut c_void,
     target: u32,
     buffer: *mut c_void,
-    attrib_list: *const EGLAttrib,
+    attrib_list: *const EGLint,
 ) -> EGLImageKHR;
 
 pub type PFN_eglDestroyImageKHR =
@@ -193,17 +198,193 @@ impl EglExtensions {
         let create_image_name = b"eglCreateImageKHR\0";
         let destroy_image_name = b"eglDestroyImageKHR\0";
 
-        let create_image_ptr = unsafe {eglGetProcAddress(create_image_name.as_ptr() as *const c_char)};
-        let destroy_image_ptr = unsafe {eglGetProcAddress(destroy_image_name.as_ptr() as *const c_char)};
+        let create_image_ptr =
+            unsafe { eglGetProcAddress(create_image_name.as_ptr() as *const c_char) };
+        let destroy_image_ptr =
+            unsafe { eglGetProcAddress(destroy_image_name.as_ptr() as *const c_char) };
 
         if create_image_ptr.is_null() || destroy_image_ptr.is_null() {
             return None;
         }
 
         Some(EglExtensions {
-            create_image: unsafe {std::mem::transmute(create_image_ptr)},
-            destroy_image: unsafe {std::mem::transmute(destroy_image_ptr)},
+            create_image: unsafe { std::mem::transmute(create_image_ptr) },
+            destroy_image: unsafe { std::mem::transmute(destroy_image_ptr) },
         })
+    }
+}
+
+pub struct EGLImage {
+    egl_extensions: EglExtensions,
+    image: EGLImageKHR,
+}
+
+impl EGLImage {
+    pub fn from(dmabuf: &Dmabuf) -> Result<Self, Box<dyn std::error::Error>> {
+        // Get dmabuf properties
+        let width = dmabuf.width();
+        let height = dmabuf.height();
+        let fourcc = dmabuf.format().code as u32;
+
+        // Get modifier if available
+        let modifier: u64 = dmabuf.format().modifier.into();
+        let modifier_lo = (modifier & 0xFFFFFFFF) as EGLint;
+        let modifier_hi = ((modifier >> 32) & 0xFFFFFFFF) as EGLint;
+
+        // Build EGL attribute list for DMA-BUF import
+        let mut attribs = [
+            EGL_WIDTH,
+            width as EGLint,
+            EGL_HEIGHT,
+            height as EGLint,
+            EGL_LINUX_DRM_FOURCC_EXT,
+            fourcc as EGLint,
+        ]
+        .to_vec();
+
+        let offsets = dmabuf.offsets().map(|o| o as usize).collect::<Vec<_>>();
+
+        let strides = dmabuf.strides().map(|s| s as i32).collect::<Vec<_>>();
+
+        for (idx, handle) in dmabuf.handles().enumerate() {
+            let fd = handle.as_raw_fd();
+            // Add to attribs the current plane data
+            if idx == 0 {
+                attribs.extend_from_slice(&[
+                    EGL_DMA_BUF_PLANE0_FD_EXT,
+                    fd,
+                    EGL_DMA_BUF_PLANE0_OFFSET_EXT,
+                    offsets[idx] as EGLint,
+                    EGL_DMA_BUF_PLANE0_PITCH_EXT,
+                    strides[idx],
+                    EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT,
+                    modifier_lo,
+                    EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT,
+                    modifier_hi,
+                ]);
+            } else if idx == 1 {
+                attribs.extend_from_slice(&[
+                    EGL_DMA_BUF_PLANE1_FD_EXT,
+                    fd,
+                    EGL_DMA_BUF_PLANE1_OFFSET_EXT,
+                    offsets[idx] as EGLint,
+                    EGL_DMA_BUF_PLANE1_PITCH_EXT,
+                    strides[idx],
+                    EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT,
+                    modifier_lo,
+                    EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT,
+                    modifier_hi,
+                ]);
+            }
+        }
+
+        attribs.push(EGL_NONE);
+
+        let egl_display = unsafe { eglGetCurrentDisplay() };
+        let egl_ext = unsafe { EglExtensions::load() }.expect("Failed to load EGL extensions");
+        let egl_image = unsafe {
+            (egl_ext.create_image)(
+                egl_display,
+                ptr::null_mut(),
+                EGL_LINUX_DMA_BUF_EXT,
+                ptr::null_mut(),
+                attribs.as_ptr(),
+            )
+        };
+        if egl_image != EGL_NO_IMAGE_KHR {
+            Ok(EGLImage {
+                egl_extensions: egl_ext,
+                image: egl_image,
+            })
+        } else {
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Failed to create EGLImage",
+            )))
+        }
+    }
+}
+
+impl Drop for EGLImage {
+    fn drop(&mut self) {
+        unsafe {
+            (self.egl_extensions.destroy_image)(eglGetCurrentDisplay(), self.image);
+        }
+    }
+}
+
+pub struct CUDAImage {
+    cuda_graphic_resource: CUgraphicsResource,
+    cuda_context: CUcontext,
+}
+
+impl CUDAImage {
+    pub fn from(
+        egl_image: &EGLImage,
+        cuda_device_id: CUdevice,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        init_cuda();
+
+        // First create a CUDA context
+        let mut device: CUdevice = 0;
+        let result = unsafe { cuDeviceGet(&mut device, cuda_device_id) };
+        if result != CUDA_SUCCESS {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!(
+                    "Failed to get CUDA device {}: {}",
+                    cuda_device_id,
+                    cuda_result_to_string(result)
+                ),
+            )));
+        }
+
+        let mut cuda_context: CUcontext = ptr::null_mut();
+        let result = unsafe { cuCtxCreate_v2(&mut cuda_context, 0, device) };
+        if result != CUDA_SUCCESS {
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!(
+                    "Failed to create CUDA context {}: {}",
+                    cuda_device_id,
+                    cuda_result_to_string(result)
+                ),
+            )));
+        }
+
+        // We can finally import the EGLImage into CUDA
+        let mut cuda_resource: CUgraphicsResource = ptr::null_mut();
+        let result = unsafe {
+            cuGraphicsEGLRegisterImage(
+                &mut cuda_resource,
+                egl_image.image,
+                0, // flags (0 = read/write)
+            )
+        };
+
+        if result != CUDA_SUCCESS {
+            Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!(
+                    "Failed to register EGLImage with CUDA: {}",
+                    cuda_result_to_string(result)
+                ),
+            )))
+        } else {
+            Ok(CUDAImage {
+                cuda_graphic_resource: cuda_resource,
+                cuda_context,
+            })
+        }
+    }
+}
+
+impl Drop for CUDAImage {
+    fn drop(&mut self) {
+        unsafe {
+            cuGraphicsUnregisterResource(self.cuda_graphic_resource);
+            cuCtxDestroy_v2(self.cuda_context);
+        }
     }
 }
 
@@ -223,27 +404,26 @@ pub fn cuda_result_to_string(result: CUresult) -> &'static str {
     }
 }
 
+pub fn init_cuda() -> CUresult {
+    unsafe {
+        static mut INITIALIZED: bool = false;
+        if !INITIALIZED {
+            let result = cuInit(0);
+            if result == CUDA_SUCCESS {
+                INITIALIZED = true;
+            }
+            result
+        } else {
+            CUDA_SUCCESS
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use gst_video::glib::translate::ToGlibPtr;
     use std::ptr;
-
-    // Helper to initialize CUDA once
-    fn init_cuda() -> CUresult {
-        unsafe {
-            static mut INITIALIZED: bool = false;
-            if !INITIALIZED {
-                let result = cuInit(0);
-                if result == CUDA_SUCCESS {
-                    INITIALIZED = true;
-                }
-                result
-            } else {
-                CUDA_SUCCESS
-            }
-        }
-    }
 
     #[test]
     fn test_cuda_init() {
@@ -512,7 +692,6 @@ mod tests {
                 gst_video::VideoInfo::builder(gst_video::VideoFormat::Nv12, width, height)
                     .build()
                     .expect("Failed to build VideoInfo");
-
 
             gst_cuda_memory_init_once();
             // Try to allocate memory
