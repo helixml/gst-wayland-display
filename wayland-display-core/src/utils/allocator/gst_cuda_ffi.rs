@@ -152,7 +152,6 @@ const CU_MEMORYTYPE_ARRAY: c_uint = 3;
 #[allow(dead_code)]
 const CU_MEMORYTYPE_UNIFIED: c_uint = 4;
 
-// GStreamer CUDA API bindings
 unsafe extern "C" {
     // gstcudaloader
     fn gst_cuda_load_library() -> glib_ffi::gboolean;
@@ -177,6 +176,8 @@ unsafe extern "C" {
 
     fn gst_cuda_stream_get_handle(stream: GstCudaStream) -> CUstream;
 }
+
+pub const CAPS_FEATURE_MEMORY_CUDA_MEMORY: &str = "memory:CUDAMemory"; // TODO: get it from FFI from gstcudamemory.h (https://github.com/GStreamer/gstreamer/blob/9d6abcc18cc9a60a212966a2daaf4a1af243f5da/subprojects/gst-plugins-bad/gst-libs/gst/cuda/gstcudamemory.h#L113-L121)
 
 // Helper to load EGL extension functions
 struct EglExtensions {

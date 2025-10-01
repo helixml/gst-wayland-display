@@ -1,4 +1,4 @@
-mod gst_cuda_ffi;
+pub mod gst_cuda_ffi;
 
 use crate::DrmModifier;
 use gst::Buffer as GstBuffer;

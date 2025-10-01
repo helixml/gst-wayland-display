@@ -352,6 +352,12 @@ pub(crate) fn init(
                                     .expect("Failed to create GsDmaBuf");
                                 state.output_buffer = Some(GsBufferType::DMA(allocator));
                             }
+                            GstVideoInfo::CUDA(base_info) => {
+                                // TODO: implement this
+                                let allocator = GsGlesbuffer::new(&mut state.renderer, base_info)
+                                    .expect("Failed to create GsGlesbuffer");
+                                state.output_buffer = Some(GsBufferType::RAW(allocator));
+                            }
                         },
                         RenderTarget::Software => {
                             let allocator =

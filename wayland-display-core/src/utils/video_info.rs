@@ -4,6 +4,7 @@ use gst_video::{VideoInfo, VideoInfoDmaDrm};
 pub enum GstVideoInfo {
     RAW(VideoInfo),
     DMA(VideoInfoDmaDrm),
+    CUDA(VideoInfo),
 }
 
 impl From<VideoInfo> for GstVideoInfo {
@@ -22,6 +23,7 @@ impl From<GstVideoInfo> for VideoInfo {
     fn from(info: GstVideoInfo) -> Self {
         match info {
             GstVideoInfo::RAW(info) => info,
+            GstVideoInfo::CUDA(info) => info,
             GstVideoInfo::DMA(info) => match info.to_video_info() {
                 Ok(info) => info,
                 Err(_) => VideoInfo::builder(info.format(), info.width(), info.height())

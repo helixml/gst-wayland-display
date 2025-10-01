@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use gst::message::Application;
 use gst_video::{VideoCapsBuilder, VideoFormat, VideoInfoDmaDrm};
 
+use crate::utils::{CAT, GstLayer};
 use gst::LibraryError;
 use gst::subclass::prelude::*;
 use gst::{Event, Fraction, glib};
@@ -15,12 +16,11 @@ use gst_base::subclass::prelude::*;
 use once_cell::sync::Lazy;
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::SubscriberExt;
+use waylanddisplaycore::utils::allocator::gst_cuda_ffi;
 use waylanddisplaycore::{
     ButtonState, Channel, Command, DrmFormat, DrmModifier, GstVideoInfo, KeyState, Sender,
     WaylandDisplay, channel, utils::device::PCIVendor,
 };
-
-use crate::utils::{CAT, GstLayer};
 
 pub struct WaylandDisplaySrc {
     state: Mutex<Option<State>>,
@@ -307,6 +307,15 @@ impl ElementImpl for WaylandDisplaySrc {
                 .width_range(..i32::MAX)
                 .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
                 .build();
+
+            let cuda_caps = gst_video::VideoCapsBuilder::new()
+                .features([gst_cuda_ffi::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
+                .format(VideoFormat::Rgbx)
+                .height_range(..i32::MAX)
+                .width_range(..i32::MAX)
+                .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
+                .build();
+
             let mut dmabuf_caps = gst_video::VideoCapsBuilder::new()
                 .features([gstreamer_allocators::CAPS_FEATURE_MEMORY_DMABUF])
                 .format(VideoFormat::DmaDrm)
@@ -316,7 +325,10 @@ impl ElementImpl for WaylandDisplaySrc {
                 .width_range(..i32::MAX)
                 .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
                 .build();
+
             dmabuf_caps.merge(caps);
+            dmabuf_caps.merge(cuda_caps);
+
             let src_pad_template = gst::PadTemplate::new(
                 "src",
                 gst::PadDirection::Src,
@@ -366,6 +378,16 @@ impl BaseSrcImpl for WaylandDisplaySrc {
             .width_range(..i32::MAX)
             .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
             .build();
+
+        let cuda_caps = gst_video::VideoCapsBuilder::new()
+            .features([gst_cuda_ffi::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
+            .format(VideoFormat::Rgbx)
+            .height_range(..i32::MAX)
+            .width_range(..i32::MAX)
+            .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
+            .build();
+
+        caps.merge(cuda_caps);
 
         let state = self.state.lock().unwrap();
         let gst_dma_formats: Vec<String> = match state.as_ref() {
@@ -443,9 +465,24 @@ impl BaseSrcImpl for WaylandDisplaySrc {
     fn set_caps(&self, caps: &gst::Caps) -> Result<(), gst::LoggableError> {
         let video_info = match VideoInfoDmaDrm::from_caps(caps) {
             Ok(dma_video_info) => GstVideoInfo::DMA(dma_video_info),
-            Err(_) => GstVideoInfo::RAW(
-                gst_video::VideoInfo::from_caps(caps).expect("failed to get video info"),
-            ),
+            Err(_) => {
+                let is_cuda = caps
+                    .iter_with_features()
+                    .filter(|(cap, features)| {
+                        features.contains(gst_cuda_ffi::CAPS_FEATURE_MEMORY_CUDA_MEMORY)
+                    })
+                    .count()
+                    > 0;
+                if is_cuda {
+                    GstVideoInfo::CUDA(
+                        gst_video::VideoInfo::from_caps(caps).expect("failed to get video info"),
+                    )
+                } else {
+                    GstVideoInfo::RAW(
+                        gst_video::VideoInfo::from_caps(caps).expect("failed to get video info"),
+                    )
+                }
+            }
         };
 
         let _ = self.command_tx.send(Command::VideoInfo(video_info));
