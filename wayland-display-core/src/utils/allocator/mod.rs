@@ -648,18 +648,6 @@ mod tests {
 
         let mut buffer = GsBufferType::DMA(raw_buffer.clone().unwrap());
 
-        let buffer_data = match &buffer {
-            GsBufferType::RAW(b) => BufferData::RAW {
-                video_info: b.video_info.clone(),
-                format: b.format,
-            },
-            GsBufferType::DMA(b) => BufferData::DMA {
-                video_info: b.video_info.clone(),
-                gst_allocator: b.gst_allocator.clone(),
-                buffer: b.buffer.clone(),
-            },
-        };
-
         let bind_result = buffer.bind(&mut renderer);
         assert!(bind_result.is_ok());
 
@@ -669,8 +657,9 @@ mod tests {
 
         let gst_buffer = {
             unsafe {
-                let egl_image =
-                    EGLImage::from(&dmabuf).expect("Failed to create EGLImage from DMA-BUF");
+                let egl_display = renderer.egl_context().display().get_display_handle().handle;
+                let egl_image = EGLImage::from(&dmabuf, &egl_display)
+                    .expect("Failed to create EGLImage from DMA-BUF");
 
                 gst_cuda_ffi::init_cuda();
                 gst_cuda_ffi::gst_cuda_load_library();

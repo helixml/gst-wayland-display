@@ -1,22 +1,21 @@
-#![allow(dead_code)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
 use gst::Buffer as GstBuffer;
 use gst::ffi as gst_ffi;
 use gst::glib::ffi as glib_ffi;
-use gst_video::glib::translate::{FromGlibPtrFull, ToGlibPtr};
-use gst_video::{VideoFormat, VideoInfo, VideoInfoDmaDrm, VideoMeta};
+use gst_video::glib::translate::{ToGlibPtr};
+use gst_video::{VideoFormat, VideoInfoDmaDrm, VideoMeta};
 use smithay::backend::allocator::Buffer;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use std::ffi::c_void;
 use std::os::fd::AsRawFd;
 use std::os::raw::{c_char, c_int, c_uint};
 use std::ptr;
+use smithay::backend::egl::ffi::egl::types::{EGLDisplay, EGLImageKHR, EGLint};
 
 pub type GstCudaContext = *mut c_void;
 pub type GstCudaStream = *mut c_void;
-pub type GstCudaMemory = *mut c_void;
 
 #[repr(C)]
 pub struct CUeglFrame {
@@ -50,22 +49,12 @@ pub type CUarray = *mut c_void;
 pub type CUgraphicsResource = *mut c_void;
 pub type CUresult = c_uint;
 
-// EGL types
-pub type EGLDisplay = *mut c_void;
-pub type EGLContext = *mut c_void;
-pub type EGLImageKHR = *mut c_void;
-pub type EGLint = i32;
-
 // CUDA constants
 pub const CUDA_SUCCESS: CUresult = 0;
-pub const CU_GRAPHICS_REGISTER_FLAGS_NONE: c_uint = 0x00;
-pub const CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY: c_uint = 0x01;
-pub const CU_GRAPHICS_REGISTER_FLAGS_WRITE_DISCARD: c_uint = 0x02;
 
 // EGL constants
 pub const EGL_NO_IMAGE_KHR: EGLImageKHR = std::ptr::null_mut();
 pub const EGL_LINUX_DMA_BUF_EXT: u32 = 0x3270;
-pub const EGL_GL_TEXTURE_2D_KHR: u32 = 0x30B1;
 pub const EGL_DMA_BUF_PLANE0_FD_EXT: EGLint = 0x3272;
 pub const EGL_DMA_BUF_PLANE0_OFFSET_EXT: EGLint = 0x3273;
 pub const EGL_DMA_BUF_PLANE0_PITCH_EXT: EGLint = 0x3274;
@@ -94,7 +83,6 @@ unsafe extern "C" {
 
     pub fn cuMemAlloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult;
     pub fn cuMemFree_v2(dptr: CUdeviceptr) -> CUresult;
-    pub fn cuMemcpy2D_v2(pCopy: *const CUDA_MEMCPY2D) -> CUresult;
     pub fn CuMemcpy2DAsync(pCopy: *const CUDA_MEMCPY2D, stream: CUstream) -> CUresult;
 
     // CUDA-EGL Interop
@@ -113,11 +101,6 @@ unsafe extern "C" {
         mipLevel: c_uint,
     ) -> CUresult;
 
-    pub fn CuGraphicsResourceGetMappedPointer(
-        pDevPtr: *mut CUdeviceptr,
-        pSize: *mut c_uint,
-        resource: CUgraphicsResource,
-    ) -> CUresult;
 
     pub fn cuStreamSynchronize(stream: CUstream) -> CUresult;
 }
@@ -125,7 +108,6 @@ unsafe extern "C" {
 #[link(name = "EGL")]
 unsafe extern "C" {
     pub fn eglGetCurrentDisplay() -> EGLDisplay;
-    pub fn eglGetCurrentContext() -> EGLContext;
     pub fn eglGetProcAddress(procname: *const c_char) -> *mut c_void;
 
     // EGLImage functions (extension, loaded via eglGetProcAddress)
@@ -165,9 +147,13 @@ pub struct CUDA_MEMCPY2D {
     pub Height: usize,
 }
 
+#[allow(dead_code)]
 pub const CU_MEMORYTYPE_HOST: c_uint = 1;
+#[allow(dead_code)]
 pub const CU_MEMORYTYPE_DEVICE: c_uint = 2;
+#[allow(dead_code)]
 pub const CU_MEMORYTYPE_ARRAY: c_uint = 3;
+#[allow(dead_code)]
 pub const CU_MEMORYTYPE_UNIFIED: c_uint = 4;
 
 // GStreamer CUDA API bindings
@@ -193,20 +179,7 @@ unsafe extern "C" {
 
     pub fn gst_cuda_memory_init_once() -> c_void;
 
-    pub fn gst_cuda_stream_new(context: *mut GstCudaContext) -> GstCudaStream;
     pub fn gst_cuda_stream_get_handle(stream: GstCudaStream) -> CUstream;
-
-    pub fn gst_cuda_allocator_alloc_wrapped(
-        allocator: *mut gst_ffi::GstAllocator,
-        context: *mut GstCudaContext,
-        stream: CUstream,
-        info: *const gst_video::ffi::GstVideoInfo,
-        dev_ptr: CUdeviceptr,
-        user_data: *mut c_void,
-        notify: Option<unsafe extern "C" fn(*mut c_void)>,
-    ) -> *mut gst_ffi::GstMemory;
-
-    pub fn gst_cuda_allocator_new(context: *mut GstCudaContext) -> *mut gst_ffi::GstAllocator;
 }
 
 // Helper to load EGL extension functions
@@ -242,7 +215,7 @@ pub struct EGLImage {
 }
 
 impl EGLImage {
-    pub fn from(dmabuf: &Dmabuf) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from(dmabuf: &Dmabuf, egl_display: &EGLDisplay) -> Result<Self, Box<dyn std::error::Error>> {
         // Get dmabuf properties
         let width = dmabuf.width();
         let height = dmabuf.height();
@@ -302,12 +275,10 @@ impl EGLImage {
 
         attribs.push(EGL_NONE);
 
-        // TODO: we should probably pass this properly from the outside
-        let egl_display = unsafe { eglGetCurrentDisplay() };
         let egl_ext = unsafe { EglExtensions::load() }.expect("Failed to load EGL extensions");
         let egl_image = unsafe {
             (egl_ext.create_image)(
-                egl_display,
+                *egl_display,
                 ptr::null_mut(),
                 EGL_LINUX_DMA_BUF_EXT,
                 ptr::null_mut(),
