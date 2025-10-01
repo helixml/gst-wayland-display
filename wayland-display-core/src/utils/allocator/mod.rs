@@ -617,6 +617,7 @@ mod tests {
     #[test]
     fn test_cuda_buffer() {
         test_init();
+        gst_cuda_ffi::init_cuda().expect("Failed to initialize CUDA");
 
         let render_node =
             DrmNode::from_path("/dev/dri/renderD129").expect("Failed to create render node");
@@ -660,10 +661,6 @@ mod tests {
                 let egl_display = renderer.egl_context().display().get_display_handle().handle;
                 let egl_image = EGLImage::from(&dmabuf, &egl_display)
                     .expect("Failed to create EGLImage from DMA-BUF");
-
-                gst_cuda_ffi::init_cuda();
-                gst_cuda_ffi::gst_cuda_load_library();
-                gst_cuda_ffi::gst_cuda_memory_init_once();
 
                 // TODO: cuda_device_id from the render node
                 //       this might be helpful: https://github.com/elFarto/nvidia-vaapi-driver/blob/3d46e26818a9e0eff26a7cd0db581316029d953b/src/export-buf.c#L121-L201

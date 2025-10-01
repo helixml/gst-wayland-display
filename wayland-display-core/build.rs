@@ -7,7 +7,10 @@ fn main() {
         .atleast_version("1.24")
         .probe("gstreamer-cuda-1.0")
     {
-        eprintln!("Warning: gstreamer-cuda-1.0 not found via pkg-config: {}", e);
+        eprintln!(
+            "Warning: gstreamer-cuda-1.0 not found via pkg-config: {}",
+            e
+        );
         eprintln!("Attempting to link manually...");
 
         // Fallback: try to link directly

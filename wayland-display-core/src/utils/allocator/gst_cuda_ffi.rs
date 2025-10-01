@@ -1,24 +1,25 @@
+#![allow(dead_code)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
 use gst::Buffer as GstBuffer;
 use gst::ffi as gst_ffi;
 use gst::glib::ffi as glib_ffi;
-use gst_video::glib::translate::{ToGlibPtr};
+use gst_video::glib::translate::ToGlibPtr;
 use gst_video::{VideoFormat, VideoInfoDmaDrm, VideoMeta};
 use smithay::backend::allocator::Buffer;
 use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::egl::ffi::egl::types::{EGLDisplay, EGLImageKHR, EGLint};
 use std::ffi::c_void;
 use std::os::fd::AsRawFd;
 use std::os::raw::{c_char, c_int, c_uint};
 use std::ptr;
-use smithay::backend::egl::ffi::egl::types::{EGLDisplay, EGLImageKHR, EGLint};
 
-pub type GstCudaContext = *mut c_void;
-pub type GstCudaStream = *mut c_void;
+type GstCudaContext = *mut c_void;
+type GstCudaStream = *mut c_void;
 
 #[repr(C)]
-pub struct CUeglFrame {
+struct CUeglFrame {
     pub frame: CUeglFrameUnion,
     pub width: c_uint,
     pub height: c_uint,
@@ -33,7 +34,7 @@ pub struct CUeglFrame {
 }
 
 #[repr(C)]
-pub union CUeglFrameUnion {
+union CUeglFrameUnion {
     pub p_array: [CUarray; MAX_PLANES],
     pub p_pitch: [*mut c_void; MAX_PLANES],
 }
@@ -41,81 +42,77 @@ pub union CUeglFrameUnion {
 const MAX_PLANES: usize = 3;
 
 // CUDA driver API types
-pub type CUdevice = c_int;
-pub type CUcontext = *mut c_void;
-pub type CUstream = *mut c_void;
-pub type CUdeviceptr = u64;
-pub type CUarray = *mut c_void;
-pub type CUgraphicsResource = *mut c_void;
-pub type CUresult = c_uint;
+type CUdevice = c_int;
+type CUcontext = *mut c_void;
+type CUstream = *mut c_void;
+type CUdeviceptr = u64;
+type CUarray = *mut c_void;
+type CUgraphicsResource = *mut c_void;
+type CUresult = c_uint;
 
 // CUDA constants
-pub const CUDA_SUCCESS: CUresult = 0;
+const CUDA_SUCCESS: CUresult = 0;
 
 // EGL constants
-pub const EGL_NO_IMAGE_KHR: EGLImageKHR = std::ptr::null_mut();
-pub const EGL_LINUX_DMA_BUF_EXT: u32 = 0x3270;
-pub const EGL_DMA_BUF_PLANE0_FD_EXT: EGLint = 0x3272;
-pub const EGL_DMA_BUF_PLANE0_OFFSET_EXT: EGLint = 0x3273;
-pub const EGL_DMA_BUF_PLANE0_PITCH_EXT: EGLint = 0x3274;
-pub const EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT: EGLint = 0x3443;
-pub const EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT: EGLint = 0x3444;
-pub const EGL_DMA_BUF_PLANE1_FD_EXT: EGLint = 0x3275;
-pub const EGL_DMA_BUF_PLANE1_OFFSET_EXT: EGLint = 0x3276;
-pub const EGL_DMA_BUF_PLANE1_PITCH_EXT: EGLint = 0x3277;
-pub const EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT: EGLint = 0x3445;
-pub const EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT: EGLint = 0x3446;
-pub const EGL_WIDTH: EGLint = 0x3057;
-pub const EGL_HEIGHT: EGLint = 0x3056;
-pub const EGL_LINUX_DRM_FOURCC_EXT: EGLint = 0x3271;
-pub const EGL_NONE: EGLint = 0x3038;
+const EGL_NO_IMAGE_KHR: EGLImageKHR = std::ptr::null_mut();
+const EGL_LINUX_DMA_BUF_EXT: u32 = 0x3270;
+const EGL_DMA_BUF_PLANE0_FD_EXT: EGLint = 0x3272;
+const EGL_DMA_BUF_PLANE0_OFFSET_EXT: EGLint = 0x3273;
+const EGL_DMA_BUF_PLANE0_PITCH_EXT: EGLint = 0x3274;
+const EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT: EGLint = 0x3443;
+const EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT: EGLint = 0x3444;
+const EGL_DMA_BUF_PLANE1_FD_EXT: EGLint = 0x3275;
+const EGL_DMA_BUF_PLANE1_OFFSET_EXT: EGLint = 0x3276;
+const EGL_DMA_BUF_PLANE1_PITCH_EXT: EGLint = 0x3277;
+const EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT: EGLint = 0x3445;
+const EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT: EGLint = 0x3446;
+const EGL_WIDTH: EGLint = 0x3057;
+const EGL_HEIGHT: EGLint = 0x3056;
+const EGL_LINUX_DRM_FOURCC_EXT: EGLint = 0x3271;
+const EGL_NONE: EGLint = 0x3038;
 
 #[link(name = "cuda")]
 unsafe extern "C" {
     // CUDA Driver API
-    pub fn cuInit(flags: c_uint) -> CUresult;
-    pub fn cuDeviceGetCount(count: *mut c_int) -> CUresult;
-    pub fn cuDeviceGet(device: *mut CUdevice, ordinal: c_int) -> CUresult;
-    pub fn cuCtxCreate_v2(pctx: *mut CUcontext, flags: c_uint, dev: CUdevice) -> CUresult;
-    pub fn cuCtxPushCurrent_v2(ctx: CUcontext) -> CUresult;
-    pub fn cuCtxPopCurrent_v2(pctx: *mut CUcontext) -> CUresult;
-    pub fn cuCtxDestroy_v2(ctx: CUcontext) -> CUresult;
+    fn cuInit(flags: c_uint) -> CUresult;
+    fn cuDeviceGetCount(count: *mut c_int) -> CUresult;
+    fn cuDeviceGet(device: *mut CUdevice, ordinal: c_int) -> CUresult;
+    fn cuCtxCreate_v2(pctx: *mut CUcontext, flags: c_uint, dev: CUdevice) -> CUresult;
+    fn cuCtxPushCurrent_v2(ctx: CUcontext) -> CUresult;
+    fn cuCtxPopCurrent_v2(pctx: *mut CUcontext) -> CUresult;
+    fn cuCtxDestroy_v2(ctx: CUcontext) -> CUresult;
 
-    pub fn cuMemAlloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult;
-    pub fn cuMemFree_v2(dptr: CUdeviceptr) -> CUresult;
-    pub fn CuMemcpy2DAsync(pCopy: *const CUDA_MEMCPY2D, stream: CUstream) -> CUresult;
+    fn cuMemAlloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult;
+    fn cuMemFree_v2(dptr: CUdeviceptr) -> CUresult;
+    fn CuMemcpy2DAsync(pCopy: *const CUDA_MEMCPY2D, stream: CUstream) -> CUresult;
 
     // CUDA-EGL Interop
-    pub fn cuGraphicsEGLRegisterImage(
+    fn cuGraphicsEGLRegisterImage(
         pCudaResource: *mut CUgraphicsResource,
         image: EGLImageKHR,
         flags: c_uint,
     ) -> CUresult;
 
-    pub fn cuGraphicsUnregisterResource(resource: CUgraphicsResource) -> CUresult;
+    fn cuGraphicsUnregisterResource(resource: CUgraphicsResource) -> CUresult;
 
-    pub fn cuGraphicsResourceGetMappedEglFrame(
+    fn cuGraphicsResourceGetMappedEglFrame(
         pEglFrame: *mut CUeglFrame,
         resource: CUgraphicsResource,
         index: c_uint,
         mipLevel: c_uint,
     ) -> CUresult;
 
-
-    pub fn cuStreamSynchronize(stream: CUstream) -> CUresult;
+    fn cuStreamSynchronize(stream: CUstream) -> CUresult;
 }
 
 #[link(name = "EGL")]
 unsafe extern "C" {
-    pub fn eglGetCurrentDisplay() -> EGLDisplay;
-    pub fn eglGetProcAddress(procname: *const c_char) -> *mut c_void;
-
-    // EGLImage functions (extension, loaded via eglGetProcAddress)
-    // We'll define function pointers for these
+    fn eglGetCurrentDisplay() -> EGLDisplay;
+    fn eglGetProcAddress(procname: *const c_char) -> *mut c_void;
 }
 
 // EGLImage extension function pointers
-pub type PFN_eglCreateImageKHR = unsafe extern "C" fn(
+type PFN_eglCreateImageKHR = unsafe extern "C" fn(
     dpy: EGLDisplay,
     ctx: *mut c_void,
     target: u32,
@@ -123,12 +120,11 @@ pub type PFN_eglCreateImageKHR = unsafe extern "C" fn(
     attrib_list: *const EGLint,
 ) -> EGLImageKHR;
 
-pub type PFN_eglDestroyImageKHR =
-    unsafe extern "C" fn(dpy: EGLDisplay, image: EGLImageKHR) -> c_int;
+type PFN_eglDestroyImageKHR = unsafe extern "C" fn(dpy: EGLDisplay, image: EGLImageKHR) -> c_int;
 
 // CUDA memcpy2D structure
 #[repr(C)]
-pub struct CUDA_MEMCPY2D {
+struct CUDA_MEMCPY2D {
     pub srcXInBytes: usize,
     pub srcY: usize,
     pub srcMemoryType: c_uint,
@@ -148,48 +144,48 @@ pub struct CUDA_MEMCPY2D {
 }
 
 #[allow(dead_code)]
-pub const CU_MEMORYTYPE_HOST: c_uint = 1;
+const CU_MEMORYTYPE_HOST: c_uint = 1;
 #[allow(dead_code)]
-pub const CU_MEMORYTYPE_DEVICE: c_uint = 2;
+const CU_MEMORYTYPE_DEVICE: c_uint = 2;
 #[allow(dead_code)]
-pub const CU_MEMORYTYPE_ARRAY: c_uint = 3;
+const CU_MEMORYTYPE_ARRAY: c_uint = 3;
 #[allow(dead_code)]
-pub const CU_MEMORYTYPE_UNIFIED: c_uint = 4;
+const CU_MEMORYTYPE_UNIFIED: c_uint = 4;
 
 // GStreamer CUDA API bindings
 unsafe extern "C" {
     // gstcudaloader
-    pub fn gst_cuda_load_library() -> glib_ffi::gboolean;
+    fn gst_cuda_load_library() -> glib_ffi::gboolean;
 
     // GstCudaContext functions
     pub fn gst_cuda_context_new(device_id: c_uint) -> *mut GstCudaContext;
-    pub fn gst_cuda_context_get_handle(context: *mut GstCudaContext) -> CUcontext;
-    pub fn gst_cuda_context_push(context: *mut GstCudaContext) -> glib_ffi::gboolean;
-    pub fn gst_cuda_context_pop(pctx: *mut CUcontext) -> glib_ffi::gboolean;
+    fn gst_cuda_context_get_handle(context: *mut GstCudaContext) -> CUcontext;
+    fn gst_cuda_context_push(context: *mut GstCudaContext) -> glib_ffi::gboolean;
+    fn gst_cuda_context_pop(pctx: *mut CUcontext) -> glib_ffi::gboolean;
 
     // GstCudaMemory functions
-    pub fn gst_cuda_allocator_alloc(
+    fn gst_cuda_allocator_alloc(
         allocator: *mut gst_ffi::GstAllocator,
         context: *mut GstCudaContext,
         stream: GstCudaStream,
         info: *const gst_video::ffi::GstVideoInfo,
     ) -> *mut gst_ffi::GstMemory;
 
-    pub fn gst_is_cuda_memory(mem: *mut gst_ffi::GstMemory) -> glib_ffi::gboolean;
+    fn gst_is_cuda_memory(mem: *mut gst_ffi::GstMemory) -> glib_ffi::gboolean;
 
-    pub fn gst_cuda_memory_init_once() -> c_void;
+    fn gst_cuda_memory_init_once() -> c_void;
 
-    pub fn gst_cuda_stream_get_handle(stream: GstCudaStream) -> CUstream;
+    fn gst_cuda_stream_get_handle(stream: GstCudaStream) -> CUstream;
 }
 
 // Helper to load EGL extension functions
-pub struct EglExtensions {
+struct EglExtensions {
     pub create_image: PFN_eglCreateImageKHR,
     pub destroy_image: PFN_eglDestroyImageKHR,
 }
 
 impl EglExtensions {
-    pub unsafe fn load() -> Option<Self> {
+    unsafe fn load() -> Option<Self> {
         let create_image_name = b"eglCreateImageKHR\0";
         let destroy_image_name = b"eglDestroyImageKHR\0";
 
@@ -215,7 +211,10 @@ pub struct EGLImage {
 }
 
 impl EGLImage {
-    pub fn from(dmabuf: &Dmabuf, egl_display: &EGLDisplay) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from(
+        dmabuf: &Dmabuf,
+        egl_display: &EGLDisplay,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         // Get dmabuf properties
         let width = dmabuf.width();
         let height = dmabuf.height();
@@ -275,6 +274,7 @@ impl EGLImage {
 
         attribs.push(EGL_NONE);
 
+        // TODO: do this once
         let egl_ext = unsafe { EglExtensions::load() }.expect("Failed to load EGL extensions");
         let egl_image = unsafe {
             (egl_ext.create_image)(
@@ -524,7 +524,7 @@ impl Drop for CUDAImage {
 }
 
 // Error handling helper
-pub fn cuda_result_to_string(result: CUresult) -> &'static str {
+fn cuda_result_to_string(result: CUresult) -> &'static str {
     match result {
         CUDA_SUCCESS => "CUDA_SUCCESS",
         1 => "CUDA_ERROR_INVALID_VALUE",
@@ -539,17 +539,25 @@ pub fn cuda_result_to_string(result: CUresult) -> &'static str {
     }
 }
 
-pub fn init_cuda() -> CUresult {
+pub fn init_cuda() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         static mut INITIALIZED: bool = false;
         if !INITIALIZED {
             let result = cuInit(0);
             if result == CUDA_SUCCESS {
+                gst_cuda_load_library();
+                gst_cuda_memory_init_once();
                 INITIALIZED = true;
+                Ok(())
+            } else {
+                Err(format!(
+                    "CUDA initialization failed: {}",
+                    cuda_result_to_string(result)
+                )
+                .into())
             }
-            result
         } else {
-            CUDA_SUCCESS
+            Ok(())
         }
     }
 }
@@ -561,19 +569,8 @@ mod tests {
     use std::ptr;
 
     #[test]
-    fn test_cuda_init() {
-        let result = init_cuda();
-        assert_eq!(
-            result,
-            CUDA_SUCCESS,
-            "CUDA initialization failed: {}",
-            cuda_result_to_string(result)
-        );
-    }
-
-    #[test]
     fn test_cuda_device_count() {
-        init_cuda();
+        init_cuda().expect("Failed to initialize CUDA");
 
         unsafe {
             let mut count: c_int = 0;
@@ -608,7 +605,7 @@ mod tests {
 
     #[test]
     fn test_cuda_context_creation() {
-        init_cuda();
+        init_cuda().expect("Failed to initialize CUDA");
 
         unsafe {
             let mut device: CUdevice = 0;
@@ -643,7 +640,7 @@ mod tests {
 
     #[test]
     fn test_cuda_memory_allocation() {
-        init_cuda();
+        init_cuda().expect("Failed to initialize CUDA");
 
         unsafe {
             let mut device: CUdevice = 0;
@@ -693,7 +690,7 @@ mod tests {
 
     #[test]
     fn test_cuda_context_push_pop() {
-        init_cuda();
+        init_cuda().expect("Failed to initialize CUDA");
 
         unsafe {
             let mut device: CUdevice = 0;
