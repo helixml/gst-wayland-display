@@ -643,7 +643,7 @@ mod tests {
             Some(Modifier::Unrecognized(0x0300000000606010))
         );
 
-        let raw_buffer = GsDmaBuf::new(render_node, drm_video_info);
+        let raw_buffer = GsDmaBuf::new(render_node, drm_video_info.clone());
         assert!(raw_buffer.is_some());
 
         let mut buffer = GsBufferType::DMA(raw_buffer.clone().unwrap());
@@ -666,21 +666,30 @@ mod tests {
         let mut dmabuf = raw_buffer.clone().unwrap().buffer;
 
         render_into(&mut renderer, &mut dmabuf, 10, 10);
-        let gst_buffer = to_gs_buffer(buffer_data, &mut bind_result.unwrap(), &mut renderer);
+
+        let gst_buffer = {
+            unsafe {
+                let egl_image =
+                    EGLImage::from(&dmabuf).expect("Failed to create EGLImage from DMA-BUF");
+
+                gst_cuda_ffi::init_cuda();
+                gst_cuda_ffi::gst_cuda_load_library();
+                gst_cuda_ffi::gst_cuda_memory_init_once();
+
+                // TODO: cuda_device_id from the render node
+                //       this might be helpful: https://github.com/elFarto/nvidia-vaapi-driver/blob/3d46e26818a9e0eff26a7cd0db581316029d953b/src/export-buf.c#L121-L201
+                let gst_cuda_ctx = gst_cuda_ffi::gst_cuda_context_new(0);
+                let cuda_image = CUDAImage::from(&egl_image, gst_cuda_ctx)
+                    .expect("Failed to create CUDA image from EGLImage");
+
+                cuda_image
+                    .to_gst_buffer(drm_video_info, gst_cuda_ctx)
+                    .expect("Failed to create Gstreamer buffer from CUDA image")
+            }
+        };
+
         let gst_buffer_size = gst_buffer.size();
         assert!(gst_buffer_size >= 4096); // There might be padding but it should at least contain our data
-
-        {
-            let egl_image =
-                EGLImage::from(&dmabuf).expect("Failed to create EGLImage from DMA-BUF");
-
-            // TODO: cuda_device_id from the render node
-            //       this might be helpful: https://github.com/elFarto/nvidia-vaapi-driver/blob/3d46e26818a9e0eff26a7cd0db581316029d953b/src/export-buf.c#L121-L201
-            let cuda_image =
-                CUDAImage::from(&egl_image, 0).expect("Failed to create CUDA image from EGLImage");
-
-            // TODO: we've got a CUDAImage, now let's wrap it in a Gstreamer CUDAMemory buffer
-        }
 
         let read_buf = gst_buffer
             .clone()
@@ -692,8 +701,8 @@ mod tests {
         assert_eq!(
             plane_data[0..10 * 4],
             [
-                255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255,
-                255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255
+                255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 0,
+                255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255
             ]
         );
 
