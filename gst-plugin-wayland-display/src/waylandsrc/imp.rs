@@ -16,6 +16,7 @@ use gst_base::subclass::prelude::*;
 use once_cell::sync::Lazy;
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::SubscriberExt;
+use waylanddisplaycore::utils::allocator::gst_cuda_ffi::CUDAContext;
 use waylanddisplaycore::utils::allocator::{gst_cuda_ffi, gst_video_format_name_to_drm_fourcc};
 use waylanddisplaycore::utils::video_info::CUDAParams;
 use waylanddisplaycore::{
@@ -28,19 +29,29 @@ pub struct WaylandDisplaySrc {
     settings: Mutex<Settings>,
     command_tx: Sender<Command>,
     command_rx: Mutex<Option<Channel<Command>>>,
-    support_cuda: bool,
+    cuda_context: Option<CUDAContext>,
 }
 
 impl Default for WaylandDisplaySrc {
     fn default() -> Self {
         let (command_tx, command_rx) = channel();
-        let support_cuda = gst_cuda_ffi::init_cuda();
+        let cuda_context = match gst_cuda_ffi::init_cuda() {
+            Ok(_) => {
+                // TODO: cuda_device_id from the render node
+                //       this might be helpful: https://github.com/elFarto/nvidia-vaapi-driver/blob/3d46e26818a9e0eff26a7cd0db581316029d953b/src/export-buf.c#L121-L201
+                Some(CUDAContext::new(0).expect("Failed to create CUDA context"))
+            }
+            Err(e) => {
+                tracing::warn!("Failed to initialize CUDA: {}", e);
+                None
+            }
+        };
         WaylandDisplaySrc {
             state: Mutex::new(None),
             settings: Mutex::new(Settings::default()),
             command_tx,
             command_rx: Mutex::new(Some(command_rx)),
-            support_cuda: support_cuda.is_ok(),
+            cuda_context,
         }
     }
 }
@@ -363,15 +374,25 @@ impl ElementImpl for WaylandDisplaySrc {
             x => x,
         }
     }
-
-    fn query(&self, query: &mut gst::QueryRef) -> bool {
-        ElementImplExt::parent_query(self, query)
-    }
 }
 
 impl BaseSrcImpl for WaylandDisplaySrc {
     fn query(&self, query: &mut gst::QueryRef) -> bool {
-        BaseSrcImplExt::parent_query(self, query)
+        if query.type_() == gst::QueryType::Context {
+            match self.cuda_context {
+                Some(ref cuda_context) => {
+                    tracing::debug!("Handling context query with CUDA");
+                    gst_cuda_ffi::gst_cuda_handle_context_query_wrapped(
+                        self.obj().as_ref().as_ref(),
+                        query,
+                        cuda_context,
+                    )
+                }
+                None => BaseSrcImplExt::parent_query(self, query),
+            }
+        } else {
+            BaseSrcImplExt::parent_query(self, query)
+        }
     }
 
     fn caps(&self, filter: Option<&gst::Caps>) -> Option<gst::Caps> {
@@ -382,7 +403,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
             .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
             .build();
 
-        if self.support_cuda {
+        if self.cuda_context.is_some() {
             let cuda_caps = gst_video::VideoCapsBuilder::new()
                 .features([gst_cuda_ffi::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
                 .format_list([VideoFormat::Bgra, VideoFormat::Rgba])
@@ -480,7 +501,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                     })
                     .count()
                     > 0;
-                if is_cuda {
+                if is_cuda && self.cuda_context.is_some() {
                     // memory:CUDAMemory will only get us a base format without modifiers,
                     // let's pick the first DRM format that matches the base format
                     let state = self.state.lock().unwrap();
@@ -496,12 +517,9 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                     let modifier: u64 = format.modifier.into();
                     let video_info =
                         VideoInfoDmaDrm::new(base_video_info, format.code as u32, modifier);
-                    // TODO: exchange CUDA context with Gstreamer
-                    let cuda_context =
-                        gst_cuda_ffi::CUDAContext::new(0).expect("failed to create CUDA context");
                     GstVideoInfo::CUDA(CUDAParams {
                         video_info,
-                        cuda_context,
+                        cuda_context: self.cuda_context.clone().unwrap(),
                     })
                 } else {
                     GstVideoInfo::RAW(base_video_info)

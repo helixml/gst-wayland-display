@@ -2,9 +2,10 @@
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
 
-use gst::Buffer as GstBuffer;
 use gst::ffi as gst_ffi;
+use gst::ffi::{GstElement, GstQuery};
 use gst::glib::ffi as glib_ffi;
+use gst::{Buffer as GstBuffer, Element, QueryRef};
 use gst_video::glib::translate::ToGlibPtr;
 use gst_video::{VideoFormat, VideoInfoDmaDrm, VideoMeta};
 use smithay::backend::allocator::Buffer;
@@ -199,10 +200,25 @@ unsafe extern "C" {
     fn gst_cuda_stream_get_handle(stream: GstCudaStream) -> CUstream;
 
     fn gst_cuda_handle_context_query(
-        element: *mut gst_ffi::GstElement,
-        query: *mut gst_ffi::GstQuery,
+        element: *mut GstElement,
+        query: *mut GstQuery,
         gst_cuda_context: *mut GstCudaContext,
     ) -> glib_ffi::gboolean;
+}
+
+pub fn gst_cuda_handle_context_query_wrapped(
+    element: &Element,
+    query: &mut QueryRef,
+    cuda_context: &CUDAContext,
+) -> bool {
+    let result = unsafe {
+        gst_cuda_handle_context_query(
+            element.to_glib_none().0,
+            query.as_mut_ptr(),
+            cuda_context.ptr,
+        )
+    };
+    result == glib_ffi::GTRUE
 }
 
 pub const CAPS_FEATURE_MEMORY_CUDA_MEMORY: &str = "memory:CUDAMemory"; // TODO: get it from FFI from gstcudamemory.h (https://github.com/GStreamer/gstreamer/blob/9d6abcc18cc9a60a212966a2daaf4a1af243f5da/subprojects/gst-plugins-bad/gst-libs/gst/cuda/gstcudamemory.h#L113-L121)
