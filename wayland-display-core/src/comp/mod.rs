@@ -74,8 +74,8 @@ pub use self::focus::*;
 pub use self::input::*;
 pub use self::rendering::*;
 use crate::utils::allocator::{
-    GsBuffer, GsBufferType, GsDmaBuf, GsGlesbuffer, VideoInfoTypes, gst_video_format_to_drm_fourcc,
-    gst_video_format_to_drm_modifier, new_gbm_device,
+    GsBuffer, GsBufferType, GsCUDABuf, GsDmaBuf, GsGlesbuffer, VideoInfoTypes,
+    gst_video_format_to_drm_fourcc, gst_video_format_to_drm_modifier, new_gbm_device,
 };
 use crate::utils::device::gpu::GPUDevice;
 use crate::utils::renderer::setup_renderer;
@@ -353,10 +353,13 @@ pub(crate) fn init(
                                 state.output_buffer = Some(GsBufferType::DMA(allocator));
                             }
                             GstVideoInfo::CUDA(base_info) => {
-                                // TODO: implement this
-                                let allocator = GsGlesbuffer::new(&mut state.renderer, base_info)
-                                    .expect("Failed to create GsGlesbuffer");
-                                state.output_buffer = Some(GsBufferType::RAW(allocator));
+                                let allocator = GsCUDABuf::new(
+                                    render_node.unwrap(),
+                                    base_info.cuda_context,
+                                    base_info.video_info,
+                                )
+                                .expect("Failed to create GsCUDABuf");
+                                state.output_buffer = Some(GsBufferType::CUDA(allocator));
                             }
                         },
                         RenderTarget::Software => {

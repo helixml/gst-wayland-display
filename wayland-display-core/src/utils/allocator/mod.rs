@@ -1,6 +1,7 @@
 pub mod gst_cuda_ffi;
 
 use crate::DrmModifier;
+use crate::utils::allocator::gst_cuda_ffi::{CUDAImage, EGLImage};
 use gst::Buffer as GstBuffer;
 use gst_video::{VideoFormat, VideoInfo, VideoInfoDmaDrm, VideoMeta};
 use gstreamer_allocators::{DmaBufAllocator, FdMemoryFlags};
@@ -123,9 +124,57 @@ impl GsDmaBuf {
 }
 
 #[derive(Debug, Clone)]
+pub struct GsCUDABuf {
+    buffer: Dmabuf,
+    video_info: VideoInfoDmaDrm,
+    cuda_context: gst_cuda_ffi::CUDAContext,
+}
+
+impl GsCUDABuf {
+    pub fn new(
+        render_node: DrmNode,
+        cuda_context: gst_cuda_ffi::CUDAContext,
+        video_info: VideoInfoDmaDrm,
+    ) -> Option<Self> {
+        tracing::debug!("Creating CUDA buffer from {:?}", &video_info);
+        let drm_fourcc = gst_video_format_to_drm_fourcc(&video_info)?;
+        let drm_modifier = gst_video_format_to_drm_modifier(&video_info)?;
+        tracing::info!(
+            "Creating CUDA buffer - DrmFourcc: {:?}, Modifier: {:?}",
+            drm_fourcc,
+            drm_modifier
+        );
+        let gbm = new_gbm_device(render_node)?;
+        let allocator = GbmAllocator::new(gbm, GbmBufferFlags::RENDERING);
+        let mut dma_allocator = DmabufAllocator(allocator);
+
+        let modifiers = [drm_modifier];
+        let result = dma_allocator.create_buffer(
+            video_info.width(),
+            video_info.height(),
+            drm_fourcc,
+            &modifiers,
+        );
+
+        match result {
+            Ok(buffer) => Some(GsCUDABuf {
+                buffer,
+                video_info,
+                cuda_context,
+            }),
+            Err(_) => {
+                tracing::warn!("Failed to create DMA buffer: {}", result.unwrap_err());
+                None
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum GsBufferType {
     RAW(GsGlesbuffer),
     DMA(GsDmaBuf),
+    CUDA(GsCUDABuf),
 }
 
 pub enum VideoInfoTypes {
@@ -147,6 +196,7 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
         match self {
             GsBufferType::RAW(buffer) => renderer.bind(&mut buffer.buffer),
             GsBufferType::DMA(buffer) => renderer.bind(&mut buffer.buffer),
+            GsBufferType::CUDA(buffer) => renderer.bind(&mut buffer.buffer),
         }
     }
 
@@ -257,6 +307,18 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
                 }
                 gst_buffer
             }
+            GsBufferType::CUDA(buffer) => {
+                let egl_display = renderer.egl_context().display().get_display_handle().handle;
+                let egl_image = EGLImage::from(&buffer.buffer, &egl_display)
+                    .expect("Failed to create EGLImage from DMA-BUF");
+
+                let cuda_image = CUDAImage::from(&egl_image, &buffer.cuda_context)
+                    .expect("Failed to create CUDA image from EGLImage");
+
+                cuda_image
+                    .to_gst_buffer(buffer.video_info.clone(), &buffer.cuda_context)
+                    .expect("Failed to create Gstreamer buffer from CUDA image")
+            }
         }
     }
 
@@ -264,6 +326,26 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
         match self {
             GsBufferType::RAW(buffer) => VideoInfoTypes::VideoInfo(buffer.video_info.clone()),
             GsBufferType::DMA(buffer) => VideoInfoTypes::VideoInfoDmaDrm(buffer.video_info.clone()),
+            GsBufferType::CUDA(buffer) => {
+                VideoInfoTypes::VideoInfoDmaDrm(buffer.video_info.clone())
+            }
+        }
+    }
+}
+
+pub fn gst_video_format_name_to_drm_fourcc(gst_format: String) -> Option<DrmFourcc> {
+    match gst_format.to_lowercase().as_str() {
+        "abgr" => Some(DrmFourcc::Rgba8888),
+        "argb" => Some(DrmFourcc::Bgra8888),
+        "bgra" => Some(DrmFourcc::Argb8888),
+        "bgrx" => Some(DrmFourcc::Xrgb8888),
+        "rgba" => Some(DrmFourcc::Abgr8888),
+        "rgbx" => Some(DrmFourcc::Xbgr8888),
+        "xbgr" => Some(DrmFourcc::Rgbx8888),
+        "xrgb" => Some(DrmFourcc::Bgrx8888),
+        _ => {
+            tracing::warn!("Unsupported video format: {:?}", gst_format);
+            None
         }
     }
 }
@@ -286,22 +368,7 @@ pub fn gst_video_format_to_drm_fourcc(format: &VideoInfoDmaDrm) -> Option<DrmFou
                 return None;
             }
             let gst_format = drm_format_str.unwrap().split(":").next().unwrap();
-
-            let format = match gst_format.to_lowercase().as_str() {
-                "abgr" => DrmFourcc::Rgba8888,
-                "argb" => DrmFourcc::Bgra8888,
-                "bgra" => DrmFourcc::Argb8888,
-                "bgrx" => DrmFourcc::Xrgb8888,
-                "rgba" => DrmFourcc::Abgr8888,
-                "rgbx" => DrmFourcc::Xbgr8888,
-                "xbgr" => DrmFourcc::Rgbx8888,
-                "xrgb" => DrmFourcc::Bgrx8888,
-                _ => {
-                    tracing::warn!("Unsupported video format: {:?}", gst_format);
-                    return None;
-                }
-            };
-            Some(format)
+            gst_video_format_name_to_drm_fourcc(gst_format.into())
         }
     }
 }
@@ -329,112 +396,6 @@ mod tests {
     use crate::utils::tests::test_init;
     use smithay::backend::renderer::Frame;
     use smithay::utils::Transform;
-
-    enum BufferData {
-        RAW {
-            video_info: VideoInfo,
-            format: DrmFourcc,
-        },
-        DMA {
-            video_info: VideoInfoDmaDrm,
-            gst_allocator: DmaBufAllocator,
-            buffer: Dmabuf,
-        },
-    }
-
-    fn to_gs_buffer(
-        data: BufferData,
-        target: &mut GlesTarget,
-        renderer: &mut GlesRenderer,
-    ) -> GstBuffer {
-        match data {
-            BufferData::RAW { video_info, format } => {
-                let mapping = renderer
-                    .copy_framebuffer(
-                        target,
-                        Rectangle::from_size(
-                            (video_info.width() as i32, video_info.height() as i32).into(),
-                        ),
-                        format,
-                    )
-                    .expect("Failed to export framebuffer");
-                let map = renderer
-                    .map_texture(&mapping)
-                    .expect("Failed to download framebuffer");
-
-                let mut gst_buffer =
-                    GstBuffer::with_size(map.len()).expect("Failed to create buffer");
-                {
-                    let gst_buffer = gst_buffer.get_mut().unwrap();
-                    let mut vframe =
-                        gst_video::VideoFrameRef::from_buffer_ref_writable(gst_buffer, &video_info)
-                            .unwrap();
-                    let plane_data = vframe.plane_data_mut(0).unwrap();
-                    plane_data.clone_from_slice(map);
-                }
-                gst_buffer
-            }
-            BufferData::DMA {
-                video_info,
-                gst_allocator,
-                buffer,
-            } => {
-                let mut gst_buffer = GstBuffer::new();
-                {
-                    let video_format = match VideoFormat::from_fourcc(buffer.format().code as u32) {
-                        VideoFormat::Unknown => {
-                            tracing::debug!(
-                                "Failed to convert fourcc to video format: {:?}",
-                                buffer.format().code
-                            );
-                            VideoFormat::Bgrx // Fallback
-                        }
-                        format => format,
-                    };
-
-                    let required_size = gst_video::VideoInfo::builder(
-                        video_format,
-                        video_info.width(),
-                        video_info.height(),
-                    )
-                    .build()
-                    .unwrap()
-                    .size();
-
-                    let gst_buffer = gst_buffer.get_mut().unwrap();
-                    buffer.handles().for_each(|handle| {
-                        let fd = handle.as_raw_fd();
-                        let actual_size = seek(&handle.as_fd(), SeekFrom::End(0)).unwrap() as usize;
-                        let _ = seek(&handle.as_fd(), SeekFrom::Start(0));
-                        let allocation_size = required_size.max(actual_size);
-                        let memory = unsafe {
-                            gst_allocator
-                                .alloc_with_flags(fd, allocation_size, FdMemoryFlags::DONT_CLOSE)
-                                .expect("Failed to allocate memory")
-                        };
-                        gst_buffer.append_memory(memory);
-                    });
-
-                    let offsets = buffer.offsets().map(|o| o as usize).collect::<Vec<_>>();
-                    let strides = buffer.strides().map(|s| s as i32).collect::<Vec<_>>();
-
-                    let meta_result = VideoMeta::add_full(
-                        gst_buffer,
-                        gst_video::VideoFrameFlags::empty(),
-                        video_format,
-                        video_info.width(),
-                        video_info.height(),
-                        &offsets,
-                        &strides,
-                    );
-                    if let Err(error) = meta_result {
-                        tracing::warn!("Failed to add video meta: {:?}", error);
-                    }
-                }
-                gst_buffer
-            }
-        }
-    }
 
     // Adapted from: https://github.com/games-on-whales/smithay/blob/master/examples/buffer_test.rs#L277
     fn render_into<R, T>(renderer: &mut R, buffer: &mut T, w: i32, h: i32)
@@ -490,24 +451,13 @@ mod tests {
         assert!(raw_buffer.is_some());
 
         let mut buffer = GsBufferType::RAW(raw_buffer.clone().unwrap());
-
-        let buffer_data = match &buffer {
-            GsBufferType::RAW(b) => BufferData::RAW {
-                video_info: b.video_info.clone(),
-                format: b.format,
-            },
-            GsBufferType::DMA(b) => BufferData::DMA {
-                video_info: b.video_info.clone(),
-                gst_allocator: b.gst_allocator.clone(),
-                buffer: b.buffer.clone(),
-            },
-        };
+        let buffer_clone = buffer.clone();
 
         let bind_result = buffer.bind(&mut renderer);
         assert!(bind_result.is_ok());
 
         render_into(&mut renderer, &mut raw_buffer.unwrap().buffer, 10, 10);
-        let gst_buffer = to_gs_buffer(buffer_data, &mut bind_result.unwrap(), &mut renderer);
+        let gst_buffer = buffer_clone.to_gs_buffer(&mut bind_result.unwrap(), &mut renderer);
         assert!(gst_buffer.is_writable());
         assert_eq!(gst_buffer.size(), video_info.size());
 
@@ -569,24 +519,13 @@ mod tests {
         assert!(raw_buffer.is_some());
 
         let mut buffer = GsBufferType::DMA(raw_buffer.clone().unwrap());
-
-        let buffer_data = match &buffer {
-            GsBufferType::RAW(b) => BufferData::RAW {
-                video_info: b.video_info.clone(),
-                format: b.format,
-            },
-            GsBufferType::DMA(b) => BufferData::DMA {
-                video_info: b.video_info.clone(),
-                gst_allocator: b.gst_allocator.clone(),
-                buffer: b.buffer.clone(),
-            },
-        };
+        let buffer_clone = buffer.clone();
 
         let bind_result = buffer.bind(&mut renderer);
         assert!(bind_result.is_ok());
 
         render_into(&mut renderer, &mut raw_buffer.unwrap().buffer, 10, 10);
-        let gst_buffer = to_gs_buffer(buffer_data, &mut bind_result.unwrap(), &mut renderer);
+        let gst_buffer = buffer_clone.to_gs_buffer(&mut bind_result.unwrap(), &mut renderer);
         let gst_buffer_size = gst_buffer.size();
         assert!(gst_buffer_size >= 4096); // There might be padding but it should at least contain our data
 
@@ -657,21 +596,20 @@ mod tests {
         render_into(&mut renderer, &mut dmabuf, 10, 10);
 
         let gst_buffer = {
-            unsafe {
-                let egl_display = renderer.egl_context().display().get_display_handle().handle;
-                let egl_image = EGLImage::from(&dmabuf, &egl_display)
-                    .expect("Failed to create EGLImage from DMA-BUF");
+            let egl_display = renderer.egl_context().display().get_display_handle().handle;
+            let egl_image = EGLImage::from(&dmabuf, &egl_display)
+                .expect("Failed to create EGLImage from DMA-BUF");
 
-                // TODO: cuda_device_id from the render node
-                //       this might be helpful: https://github.com/elFarto/nvidia-vaapi-driver/blob/3d46e26818a9e0eff26a7cd0db581316029d953b/src/export-buf.c#L121-L201
-                let gst_cuda_ctx = gst_cuda_ffi::gst_cuda_context_new(0);
-                let cuda_image = CUDAImage::from(&egl_image, gst_cuda_ctx)
-                    .expect("Failed to create CUDA image from EGLImage");
+            // TODO: cuda_device_id from the render node
+            //       this might be helpful: https://github.com/elFarto/nvidia-vaapi-driver/blob/3d46e26818a9e0eff26a7cd0db581316029d953b/src/export-buf.c#L121-L201
+            let gst_cuda_ctx =
+                gst_cuda_ffi::CUDAContext::new(0).expect("Failed to create CUDA context");
+            let cuda_image = CUDAImage::from(&egl_image, &gst_cuda_ctx)
+                .expect("Failed to create CUDA image from EGLImage");
 
-                cuda_image
-                    .to_gst_buffer(drm_video_info, gst_cuda_ctx)
-                    .expect("Failed to create Gstreamer buffer from CUDA image")
-            }
+            cuda_image
+                .to_gst_buffer(drm_video_info, &gst_cuda_ctx)
+                .expect("Failed to create Gstreamer buffer from CUDA image")
         };
 
         let gst_buffer_size = gst_buffer.size();

@@ -16,9 +16,10 @@ use gst_base::subclass::prelude::*;
 use once_cell::sync::Lazy;
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::SubscriberExt;
-use waylanddisplaycore::utils::allocator::gst_cuda_ffi;
+use waylanddisplaycore::utils::allocator::{gst_cuda_ffi, gst_video_format_name_to_drm_fourcc};
+use waylanddisplaycore::utils::video_info::CUDAParams;
 use waylanddisplaycore::{
-    ButtonState, Channel, Command, DrmFormat, DrmModifier, GstVideoInfo, KeyState, Sender,
+    ButtonState, Channel, Command, DrmFormat, DrmModifier, Fourcc, GstVideoInfo, KeyState, Sender,
     WaylandDisplay, channel, utils::device::PCIVendor,
 };
 
@@ -27,17 +28,19 @@ pub struct WaylandDisplaySrc {
     settings: Mutex<Settings>,
     command_tx: Sender<Command>,
     command_rx: Mutex<Option<Channel<Command>>>,
+    support_cuda: bool,
 }
 
 impl Default for WaylandDisplaySrc {
     fn default() -> Self {
         let (command_tx, command_rx) = channel();
-
+        let support_cuda = gst_cuda_ffi::init_cuda();
         WaylandDisplaySrc {
             state: Mutex::new(None),
             settings: Mutex::new(Settings::default()),
             command_tx,
             command_rx: Mutex::new(Some(command_rx)),
+            support_cuda: support_cuda.is_ok(),
         }
     }
 }
@@ -310,7 +313,7 @@ impl ElementImpl for WaylandDisplaySrc {
 
             let cuda_caps = gst_video::VideoCapsBuilder::new()
                 .features([gst_cuda_ffi::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
-                .format(VideoFormat::Rgbx)
+                .format_list([VideoFormat::Bgra, VideoFormat::Rgba])
                 .height_range(..i32::MAX)
                 .width_range(..i32::MAX)
                 .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
@@ -379,15 +382,17 @@ impl BaseSrcImpl for WaylandDisplaySrc {
             .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
             .build();
 
-        let cuda_caps = gst_video::VideoCapsBuilder::new()
-            .features([gst_cuda_ffi::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
-            .format(VideoFormat::Rgbx)
-            .height_range(..i32::MAX)
-            .width_range(..i32::MAX)
-            .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
-            .build();
+        if self.support_cuda {
+            let cuda_caps = gst_video::VideoCapsBuilder::new()
+                .features([gst_cuda_ffi::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
+                .format_list([VideoFormat::Bgra, VideoFormat::Rgba])
+                .height_range(..i32::MAX)
+                .width_range(..i32::MAX)
+                .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
+                .build();
 
-        caps.merge(cuda_caps);
+            caps.merge(cuda_caps);
+        }
 
         let state = self.state.lock().unwrap();
         let gst_dma_formats: Vec<String> = match state.as_ref() {
@@ -466,21 +471,40 @@ impl BaseSrcImpl for WaylandDisplaySrc {
         let video_info = match VideoInfoDmaDrm::from_caps(caps) {
             Ok(dma_video_info) => GstVideoInfo::DMA(dma_video_info),
             Err(_) => {
+                let base_video_info =
+                    gst_video::VideoInfo::from_caps(caps).expect("failed to get video info");
                 let is_cuda = caps
                     .iter_with_features()
-                    .filter(|(cap, features)| {
+                    .filter(|(_cap, features)| {
                         features.contains(gst_cuda_ffi::CAPS_FEATURE_MEMORY_CUDA_MEMORY)
                     })
                     .count()
                     > 0;
                 if is_cuda {
-                    GstVideoInfo::CUDA(
-                        gst_video::VideoInfo::from_caps(caps).expect("failed to get video info"),
-                    )
+                    // memory:CUDAMemory will only get us a base format without modifiers,
+                    // let's pick the first DRM format that matches the base format
+                    let state = self.state.lock().unwrap();
+                    let dma_formats = state.as_ref().unwrap().display.get_supported_dma_formats();
+                    let chosen_format =
+                        gst_video_format_name_to_drm_fourcc(base_video_info.format().to_string())
+                            .unwrap_or(Fourcc::Abgr8888);
+                    let format = dma_formats
+                        .iter()
+                        .filter(|dma_format| dma_format.code == chosen_format)
+                        .next()
+                        .expect("failed to find a matching DRM format for the CUDA format");
+                    let modifier: u64 = format.modifier.into();
+                    let video_info =
+                        VideoInfoDmaDrm::new(base_video_info, format.code as u32, modifier);
+                    // TODO: exchange CUDA context with Gstreamer
+                    let cuda_context =
+                        gst_cuda_ffi::CUDAContext::new(0).expect("failed to create CUDA context");
+                    GstVideoInfo::CUDA(CUDAParams {
+                        video_info,
+                        cuda_context,
+                    })
                 } else {
-                    GstVideoInfo::RAW(
-                        gst_video::VideoInfo::from_caps(caps).expect("failed to get video info"),
-                    )
+                    GstVideoInfo::RAW(base_video_info)
                 }
             }
         };

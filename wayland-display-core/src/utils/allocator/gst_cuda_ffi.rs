@@ -16,6 +16,28 @@ use std::os::raw::{c_char, c_int, c_uint};
 use std::ptr;
 
 type GstCudaContext = *mut c_void;
+
+#[derive(Debug, Clone)]
+pub struct CUDAContext {
+    ptr: *mut GstCudaContext,
+}
+unsafe impl Send for CUDAContext {}
+unsafe impl Sync for CUDAContext {}
+
+impl CUDAContext {
+    pub fn new(device_id: c_uint) -> Result<Self, Box<dyn std::error::Error>> {
+        let ptr = unsafe { gst_cuda_context_new(device_id) };
+        if ptr.is_null() {
+            return Err("Failed to create CUDA context".into());
+        }
+        Ok(CUDAContext { ptr })
+    }
+
+    pub fn as_ptr(&self) -> *mut GstCudaContext {
+        self.ptr
+    }
+}
+
 type GstCudaStream = *mut c_void;
 
 #[repr(C)]
@@ -157,7 +179,7 @@ unsafe extern "C" {
     fn gst_cuda_load_library() -> glib_ffi::gboolean;
 
     // GstCudaContext functions
-    pub fn gst_cuda_context_new(device_id: c_uint) -> *mut GstCudaContext;
+    fn gst_cuda_context_new(device_id: c_uint) -> *mut GstCudaContext;
     fn gst_cuda_context_get_handle(context: *mut GstCudaContext) -> CUcontext;
     fn gst_cuda_context_push(context: *mut GstCudaContext) -> glib_ffi::gboolean;
     fn gst_cuda_context_pop(pctx: *mut CUcontext) -> glib_ffi::gboolean;
@@ -315,9 +337,9 @@ pub struct CUDAImage {
 impl CUDAImage {
     pub fn from(
         egl_image: &EGLImage,
-        cuda_context: *mut GstCudaContext,
+        cuda_context: &CUDAContext,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        if unsafe { gst_cuda_context_push(cuda_context) } == glib_ffi::GFALSE {
+        if unsafe { gst_cuda_context_push(cuda_context.ptr) } == glib_ffi::GFALSE {
             return Err(Box::new(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Failed to push CUDA context",
@@ -354,9 +376,9 @@ impl CUDAImage {
     pub fn to_gst_buffer(
         &self,
         dma_video_info: VideoInfoDmaDrm,
-        cuda_context: *mut GstCudaContext,
+        cuda_context: &CUDAContext,
     ) -> Result<GstBuffer, Box<dyn std::error::Error>> {
-        if unsafe { gst_cuda_context_push(cuda_context) } == glib_ffi::GFALSE {
+        if unsafe { gst_cuda_context_push(cuda_context.ptr) } == glib_ffi::GFALSE {
             return Err("Failed to push CUDA context".into());
         }
 
@@ -390,7 +412,7 @@ impl CUDAImage {
         }
         let stream = unsafe { std::mem::zeroed() };
         let gst_memory = unsafe {
-            gst_cuda_allocator_alloc(ptr::null_mut(), cuda_context, stream, &mut video_info)
+            gst_cuda_allocator_alloc(ptr::null_mut(), cuda_context.ptr, stream, &mut video_info)
         };
         if gst_memory.is_null() {
             return Err("Failed to allocate GST CUDA memory".into());
@@ -410,7 +432,7 @@ impl CUDAImage {
         let dst_device_ptr = map_info.data as CUdeviceptr;
 
         // Copy from EGL frame to GStreamer memory for each plane
-        if unsafe { gst_cuda_context_push(cuda_context) } == glib_ffi::GFALSE {
+        if unsafe { gst_cuda_context_push(cuda_context.ptr) } == glib_ffi::GFALSE {
             return Err("Failed to push CUDA context".into());
         }
         for plane in 0..egl_frame.plane_count as usize {
