@@ -26,7 +26,7 @@ unsafe impl Send for CUDAContext {}
 unsafe impl Sync for CUDAContext {}
 
 impl CUDAContext {
-    pub fn new(device_id: c_uint) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn new(device_id: c_uint) -> Result<Self, String> {
         let ptr = unsafe { gst_cuda_context_new(device_id) };
         if ptr.is_null() {
             return Err("Failed to create CUDA context".into());
@@ -128,6 +128,25 @@ unsafe extern "C" {
     fn cuStreamSynchronize(stream: CUstream) -> CUresult;
 }
 
+fn gst_dma_video_info_to_video_info(
+    dma_video_info: &VideoInfoDmaDrm,
+) -> Result<gst_video::ffi::GstVideoInfo, String> {
+    let mut video_info: gst_video::ffi::GstVideoInfo = unsafe { std::mem::zeroed() };
+    unsafe { gst_video::ffi::gst_video_info_init(&mut video_info) };
+
+    let result = unsafe {
+        gst_video::ffi::gst_video_info_dma_drm_to_video_info(
+            dma_video_info.to_glib_none().0,
+            &mut video_info,
+        )
+    };
+    if result == glib_ffi::GFALSE {
+        return Err("Failed to convert DMA-BUF video info to GStreamer video info".into());
+    }
+
+    Ok(video_info)
+}
+
 #[link(name = "EGL")]
 unsafe extern "C" {
     fn eglGetCurrentDisplay() -> EGLDisplay;
@@ -199,6 +218,8 @@ unsafe extern "C" {
 
     fn gst_cuda_stream_get_handle(stream: GstCudaStream) -> CUstream;
 
+    fn gst_cuda_memory_get_stream(mem: *mut gst_ffi::GstMemory) -> GstCudaStream;
+
     fn gst_cuda_handle_context_query(
         element: *mut GstElement,
         query: *mut GstQuery,
@@ -265,7 +286,7 @@ impl EGLImage {
         dmabuf: &Dmabuf,
         egl_display: &EGLDisplay,
         egl_ext: &EglExtensions,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, String> {
         // Get dmabuf properties
         let width = dmabuf.width();
         let height = dmabuf.height();
@@ -340,10 +361,7 @@ impl EGLImage {
                 destroy_fn: egl_ext.destroy_image,
             })
         } else {
-            Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to create EGLImage",
-            )))
+            Err("Failed to create EGLImage".into())
         }
     }
 }
@@ -361,15 +379,9 @@ pub struct CUDAImage {
 }
 
 impl CUDAImage {
-    pub fn from(
-        egl_image: &EGLImage,
-        cuda_context: &CUDAContext,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from(egl_image: &EGLImage, cuda_context: &CUDAContext) -> Result<Self, String> {
         if unsafe { gst_cuda_context_push(cuda_context.ptr) } == glib_ffi::GFALSE {
-            return Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "Failed to push CUDA context",
-            )));
+            return Err("Failed to push CUDA context".into());
         }
 
         // Let's import the EGLImage into CUDA
@@ -385,13 +397,7 @@ impl CUDAImage {
         unsafe { gst_cuda_context_pop(ptr::null_mut()) };
 
         if result != CUDA_SUCCESS {
-            Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!(
-                    "Failed to register EGLImage with CUDA: {}",
-                    cuda_result_to_string(result)
-                ),
-            )))
+            Err(cuda_result_to_string(result).into())
         } else {
             Ok(CUDAImage {
                 cuda_graphic_resource: cuda_resource,
@@ -424,18 +430,7 @@ impl CUDAImage {
         }
 
         // Create a CUDA stream
-        let mut video_info: gst_video::ffi::GstVideoInfo = unsafe { std::mem::zeroed() };
-        unsafe { gst_video::ffi::gst_video_info_init(&mut video_info) };
-
-        if unsafe {
-            gst_video::ffi::gst_video_info_dma_drm_to_video_info(
-                dma_video_info.to_glib_none().0,
-                &mut video_info,
-            )
-        } == glib_ffi::GFALSE
-        {
-            return Err("Failed to convert DMA-BUF video info to GStreamer video info".into());
-        }
+        let mut video_info = gst_dma_video_info_to_video_info(&dma_video_info)?;
         let stream = unsafe { std::mem::zeroed() };
         let gst_memory = unsafe {
             gst_cuda_allocator_alloc(ptr::null_mut(), cuda_context.ptr, stream, &mut video_info)
@@ -538,7 +533,6 @@ impl CUDAImage {
             let buffer_ref = buffer.get_mut().unwrap();
             buffer_ref.append_memory(unsafe { gst::Memory::from_glib_full(gst_memory) });
 
-            // Create a VideoInfo from the converted GstVideoInfo
             let video_format = match VideoFormat::from_fourcc(dma_video_info.fourcc()) {
                 VideoFormat::Unknown => {
                     tracing::debug!(
@@ -588,7 +582,7 @@ fn cuda_result_to_string(result: CUresult) -> &'static str {
     }
 }
 
-pub fn init_cuda() -> Result<(), Box<dyn std::error::Error>> {
+pub fn init_cuda() -> Result<(), String> {
     unsafe {
         static mut INITIALIZED: bool = false;
         if !INITIALIZED {

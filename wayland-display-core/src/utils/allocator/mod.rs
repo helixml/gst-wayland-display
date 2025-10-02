@@ -394,7 +394,6 @@ pub fn gst_video_format_to_drm_modifier(format: &VideoInfoDmaDrm) -> Option<DrmM
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::allocator::gst_cuda_ffi::{CUDAImage, EGLImage};
     use crate::utils::renderer::setup_renderer;
     use crate::utils::tests::test_init;
     use smithay::backend::renderer::Frame;
@@ -586,38 +585,22 @@ mod tests {
             Some(Modifier::Unrecognized(0x0300000000606010))
         );
 
-        let raw_buffer = GsDmaBuf::new(render_node, drm_video_info.clone());
+        let gst_cuda_ctx =
+            gst_cuda_ffi::CUDAContext::new(0).expect("Failed to create CUDA context");
+        let raw_buffer = GsCUDABuf::new(render_node, gst_cuda_ctx, drm_video_info.clone());
         assert!(raw_buffer.is_some());
 
-        let mut buffer = GsBufferType::DMA(raw_buffer.clone().unwrap());
+        let mut buffer = GsBufferType::CUDA(raw_buffer.clone().unwrap());
+        let buffer_clone = buffer.clone();
 
         let bind_result = buffer.bind(&mut renderer);
         assert!(bind_result.is_ok());
 
-        let mut dmabuf = raw_buffer.clone().unwrap().buffer;
-
-        render_into(&mut renderer, &mut dmabuf, 10, 10);
-
-        let gst_buffer = {
-            let egl_display = renderer.egl_context().display().get_display_handle().handle;
-            let egl_extensions = EglExtensions::new().expect("Failed to create EGL extensions");
-            let egl_image = EGLImage::from(&dmabuf, &egl_display, &egl_extensions)
-                .expect("Failed to create EGLImage from DMA-BUF");
-
-            // TODO: cuda_device_id from the render node
-            //       this might be helpful: https://github.com/elFarto/nvidia-vaapi-driver/blob/3d46e26818a9e0eff26a7cd0db581316029d953b/src/export-buf.c#L121-L201
-            let gst_cuda_ctx =
-                gst_cuda_ffi::CUDAContext::new(0).expect("Failed to create CUDA context");
-            let cuda_image = CUDAImage::from(&egl_image, &gst_cuda_ctx)
-                .expect("Failed to create CUDA image from EGLImage");
-
-            cuda_image
-                .to_gst_buffer(drm_video_info, &gst_cuda_ctx)
-                .expect("Failed to create Gstreamer buffer from CUDA image")
-        };
+        render_into(&mut renderer, &mut raw_buffer.unwrap().buffer, 10, 10);
+        let gst_buffer = buffer_clone.to_gs_buffer(&mut bind_result.unwrap(), &mut renderer);
 
         let gst_buffer_size = gst_buffer.size();
-        assert!(gst_buffer_size >= 4096); // There might be padding but it should at least contain our data
+        assert!(gst_buffer_size >= 4096); // There might be padding, but it should at least contain our data
 
         let read_buf = gst_buffer
             .clone()
