@@ -139,23 +139,14 @@ pub struct State {
 impl Drop for State {
     fn drop(&mut self) {
         // Force GL cleanup before renderer is dropped
-        // This works around Smithay GlesRenderer::drop() bug where cleanup is skipped if make_current() fails
-        tracing::debug!("Forcing GL cleanup before State drop");
-        
-        // Try to make context current and run cleanup explicitly
-        if let Err(e) = self.renderer.bind(Default::default()) {
-            tracing::warn!("Failed to bind renderer during State drop: {:?}", e);
-        }
-        
-        // Unbind will call cleanup internally
-        if let Err(e) = self.renderer.unbind() {
-            tracing::warn!("Failed to unbind renderer during State drop: {:?}", e);
-        }
-        
-        // Clear output buffer before renderer drops to ensure resources are freed
+        // Clear output buffer first to trigger resource cleanup while renderer is still valid
+        tracing::debug!("Clearing output buffer before State drop to force GL cleanup");
         self.output_buffer.take();
         
-        tracing::debug!("State GL cleanup completed");
+        // Note: We cannot call unbind() as it's private in Smithay
+        // The buffer clear above should trigger cleanup via Drop of GsGlesbuffer
+        // which sends resources to the cleanup queue that GlesRenderer::drop() processes
+        tracing::debug!("State GL cleanup preparation completed");
     }
 }
 
