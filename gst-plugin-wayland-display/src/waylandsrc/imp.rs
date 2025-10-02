@@ -19,7 +19,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use waylanddisplaycore::utils::allocator::{gst_cuda_ffi, gst_video_format_name_to_drm_fourcc};
 use waylanddisplaycore::utils::video_info::CUDAParams;
 use waylanddisplaycore::{
-    ButtonState, Channel, Command, DrmFormat, DrmModifier, Fourcc, GstVideoInfo, KeyState, Sender,
+    ButtonState, Channel, Command, DrmFormat, DrmModifier, GstVideoInfo, KeyState, Sender,
     WaylandDisplay, channel, utils::device::PCIVendor,
 };
 
@@ -487,7 +487,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                     let dma_formats = state.as_ref().unwrap().display.get_supported_dma_formats();
                     let chosen_format =
                         gst_video_format_name_to_drm_fourcc(base_video_info.format().to_string())
-                            .unwrap_or(Fourcc::Abgr8888);
+                            .expect("failed to get drm format");
                     let format = dma_formats
                         .iter()
                         .filter(|dma_format| dma_format.code == chosen_format)

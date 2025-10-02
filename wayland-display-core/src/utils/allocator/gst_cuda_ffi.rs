@@ -197,12 +197,19 @@ unsafe extern "C" {
     fn gst_cuda_memory_init_once() -> c_void;
 
     fn gst_cuda_stream_get_handle(stream: GstCudaStream) -> CUstream;
+
+    fn gst_cuda_handle_context_query(
+        element: *mut gst_ffi::GstElement,
+        query: *mut gst_ffi::GstQuery,
+        gst_cuda_context: *mut GstCudaContext,
+    ) -> glib_ffi::gboolean;
 }
 
 pub const CAPS_FEATURE_MEMORY_CUDA_MEMORY: &str = "memory:CUDAMemory"; // TODO: get it from FFI from gstcudamemory.h (https://github.com/GStreamer/gstreamer/blob/9d6abcc18cc9a60a212966a2daaf4a1af243f5da/subprojects/gst-plugins-bad/gst-libs/gst/cuda/gstcudamemory.h#L113-L121)
 
 // Helper to load EGL extension functions
-struct EglExtensions {
+#[derive(Debug, Clone)]
+pub struct EglExtensions {
     pub create_image: PFN_eglCreateImageKHR,
     pub destroy_image: PFN_eglDestroyImageKHR,
 }
@@ -226,17 +233,22 @@ impl EglExtensions {
             destroy_image: unsafe { std::mem::transmute(destroy_image_ptr) },
         })
     }
+
+    pub fn new() -> Option<Self> {
+        unsafe { EglExtensions::load() }
+    }
 }
 
 pub struct EGLImage {
-    egl_extensions: EglExtensions,
     image: EGLImageKHR,
+    destroy_fn: PFN_eglDestroyImageKHR,
 }
 
 impl EGLImage {
     pub fn from(
         dmabuf: &Dmabuf,
         egl_display: &EGLDisplay,
+        egl_ext: &EglExtensions,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Get dmabuf properties
         let width = dmabuf.width();
@@ -297,8 +309,6 @@ impl EGLImage {
 
         attribs.push(EGL_NONE);
 
-        // TODO: do this once
-        let egl_ext = unsafe { EglExtensions::load() }.expect("Failed to load EGL extensions");
         let egl_image = unsafe {
             (egl_ext.create_image)(
                 *egl_display,
@@ -310,8 +320,8 @@ impl EGLImage {
         };
         if egl_image != EGL_NO_IMAGE_KHR {
             Ok(EGLImage {
-                egl_extensions: egl_ext,
                 image: egl_image,
+                destroy_fn: egl_ext.destroy_image,
             })
         } else {
             Err(Box::new(std::io::Error::new(
@@ -325,7 +335,7 @@ impl EGLImage {
 impl Drop for EGLImage {
     fn drop(&mut self) {
         unsafe {
-            (self.egl_extensions.destroy_image)(eglGetCurrentDisplay(), self.image);
+            (self.destroy_fn)(eglGetCurrentDisplay(), self.image);
         }
     }
 }

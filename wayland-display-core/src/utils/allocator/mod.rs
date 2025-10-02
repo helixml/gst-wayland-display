@@ -1,7 +1,7 @@
 pub mod gst_cuda_ffi;
 
 use crate::DrmModifier;
-use crate::utils::allocator::gst_cuda_ffi::{CUDAImage, EGLImage};
+use crate::utils::allocator::gst_cuda_ffi::{CUDAImage, EGLImage, EglExtensions};
 use gst::Buffer as GstBuffer;
 use gst_video::{VideoFormat, VideoInfo, VideoInfoDmaDrm, VideoMeta};
 use gstreamer_allocators::{DmaBufAllocator, FdMemoryFlags};
@@ -128,6 +128,7 @@ pub struct GsCUDABuf {
     buffer: Dmabuf,
     video_info: VideoInfoDmaDrm,
     cuda_context: gst_cuda_ffi::CUDAContext,
+    egl_extensions: EglExtensions,
 }
 
 impl GsCUDABuf {
@@ -161,6 +162,7 @@ impl GsCUDABuf {
                 buffer,
                 video_info,
                 cuda_context,
+                egl_extensions: EglExtensions::new().expect("Failed to get EGL extensions"),
             }),
             Err(_) => {
                 tracing::warn!("Failed to create DMA buffer: {}", result.unwrap_err());
@@ -309,8 +311,9 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
             }
             GsBufferType::CUDA(buffer) => {
                 let egl_display = renderer.egl_context().display().get_display_handle().handle;
-                let egl_image = EGLImage::from(&buffer.buffer, &egl_display)
-                    .expect("Failed to create EGLImage from DMA-BUF");
+                let egl_image =
+                    EGLImage::from(&buffer.buffer, &egl_display, &buffer.egl_extensions)
+                        .expect("Failed to create EGLImage from DMA-BUF");
 
                 let cuda_image = CUDAImage::from(&egl_image, &buffer.cuda_context)
                     .expect("Failed to create CUDA image from EGLImage");
@@ -597,7 +600,8 @@ mod tests {
 
         let gst_buffer = {
             let egl_display = renderer.egl_context().display().get_display_handle().handle;
-            let egl_image = EGLImage::from(&dmabuf, &egl_display)
+            let egl_extensions = EglExtensions::new().expect("Failed to create EGL extensions");
+            let egl_image = EGLImage::from(&dmabuf, &egl_display, &egl_extensions)
                 .expect("Failed to create EGLImage from DMA-BUF");
 
             // TODO: cuda_device_id from the render node
