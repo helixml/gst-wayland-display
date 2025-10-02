@@ -22,7 +22,7 @@ wayland-scanner = "0.31.6"
 gstreamer-allocators = { version = "0.23.2", package = "gstreamer-allocators", features = ["v1_24", "v1_16"] }
 
 [dev-dependencies]
-tracing-subscriber = "0.3.18"
+tracing-subscriber = "0.3.20"
 wayland-client = "0.31.10"
 wayland-protocols = { version = "0.32.8", features = ["client"] }
 calloop = { version = "0.14.2", features = ["executor", "futures-io", "signals"] }
