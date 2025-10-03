@@ -16,8 +16,7 @@ use gst_base::subclass::prelude::*;
 use once_cell::sync::Lazy;
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::SubscriberExt;
-use waylanddisplaycore::utils::allocator::gst_cuda_ffi::CUDAContext;
-use waylanddisplaycore::utils::allocator::{gst_cuda_ffi, gst_video_format_name_to_drm_fourcc};
+use waylanddisplaycore::utils::allocator::{cuda, gst_video_format_name_to_drm_fourcc};
 use waylanddisplaycore::utils::video_info::CUDAParams;
 use waylanddisplaycore::{
     ButtonState, Channel, Command, DrmFormat, DrmModifier, GstVideoInfo, KeyState, Sender,
@@ -29,17 +28,17 @@ pub struct WaylandDisplaySrc {
     settings: Mutex<Settings>,
     command_tx: Sender<Command>,
     command_rx: Mutex<Option<Channel<Command>>>,
-    cuda_context: Option<CUDAContext>,
+    cuda_context: Option<cuda::CUDAContext>,
 }
 
 impl Default for WaylandDisplaySrc {
     fn default() -> Self {
         let (command_tx, command_rx) = channel();
-        let cuda_context = match gst_cuda_ffi::init_cuda() {
+        let cuda_context = match cuda::init_cuda() {
             Ok(_) => {
                 // TODO: cuda_device_id from the render node
                 //       this might be helpful: https://github.com/elFarto/nvidia-vaapi-driver/blob/3d46e26818a9e0eff26a7cd0db581316029d953b/src/export-buf.c#L121-L201
-                Some(CUDAContext::new(0).expect("Failed to create CUDA context"))
+                Some(cuda::CUDAContext::new(0).expect("Failed to create CUDA context"))
             }
             Err(e) => {
                 tracing::warn!("Failed to initialize CUDA: {}", e);
@@ -323,7 +322,7 @@ impl ElementImpl for WaylandDisplaySrc {
                 .build();
 
             let cuda_caps = gst_video::VideoCapsBuilder::new()
-                .features([gst_cuda_ffi::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
+                .features([cuda::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
                 .format_list([VideoFormat::Bgra, VideoFormat::Rgba])
                 .height_range(..i32::MAX)
                 .width_range(..i32::MAX)
@@ -382,7 +381,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
             match self.cuda_context {
                 Some(ref cuda_context) => {
                     tracing::debug!("Handling context query with CUDA");
-                    gst_cuda_ffi::gst_cuda_handle_context_query_wrapped(
+                    cuda::gst_cuda_handle_context_query_wrapped(
                         self.obj().as_ref().as_ref(),
                         query,
                         cuda_context,
@@ -405,7 +404,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
 
         if self.cuda_context.is_some() {
             let cuda_caps = gst_video::VideoCapsBuilder::new()
-                .features([gst_cuda_ffi::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
+                .features([cuda::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
                 .format_list([VideoFormat::Bgra, VideoFormat::Rgba])
                 .height_range(..i32::MAX)
                 .width_range(..i32::MAX)
@@ -495,12 +494,9 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                 let base_video_info =
                     gst_video::VideoInfo::from_caps(caps).expect("failed to get video info");
                 let is_cuda = caps
-                    .iter_with_features()
-                    .filter(|(_cap, features)| {
-                        features.contains(gst_cuda_ffi::CAPS_FEATURE_MEMORY_CUDA_MEMORY)
-                    })
-                    .count()
-                    > 0;
+                    .features(0)
+                    .expect("Failed to get features")
+                    .contains(cuda::CAPS_FEATURE_MEMORY_CUDA_MEMORY);
                 if is_cuda && self.cuda_context.is_some() {
                     // memory:CUDAMemory will only get us a base format without modifiers,
                     // let's pick the first DRM format that matches the base format

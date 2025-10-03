@@ -1,7 +1,7 @@
-pub mod gst_cuda_ffi;
+pub mod cuda;
 
 use crate::DrmModifier;
-use crate::utils::allocator::gst_cuda_ffi::{CUDAImage, EGLImage, EglExtensions};
+use crate::utils::allocator::cuda::{CUDAContext, CUDAImage, EGLImage, EglExtensions};
 use gst::Buffer as GstBuffer;
 use gst_video::{VideoFormat, VideoInfo, VideoInfoDmaDrm, VideoMeta};
 use gstreamer_allocators::{DmaBufAllocator, FdMemoryFlags};
@@ -127,14 +127,14 @@ impl GsDmaBuf {
 pub struct GsCUDABuf {
     buffer: Dmabuf,
     video_info: VideoInfoDmaDrm,
-    cuda_context: gst_cuda_ffi::CUDAContext,
+    cuda_context: CUDAContext,
     egl_extensions: EglExtensions,
 }
 
 impl GsCUDABuf {
     pub fn new(
         render_node: DrmNode,
-        cuda_context: gst_cuda_ffi::CUDAContext,
+        cuda_context: CUDAContext,
         video_info: VideoInfoDmaDrm,
     ) -> Option<Self> {
         tracing::debug!("Creating CUDA buffer from {:?}", &video_info);
@@ -558,7 +558,7 @@ mod tests {
     #[test]
     fn test_cuda_buffer() {
         test_init();
-        gst_cuda_ffi::init_cuda().expect("Failed to initialize CUDA");
+        cuda::init_cuda().expect("Failed to initialize CUDA");
 
         let render_node =
             DrmNode::from_path("/dev/dri/renderD129").expect("Failed to create render node");
@@ -585,9 +585,8 @@ mod tests {
             Some(Modifier::Unrecognized(0x0300000000606010))
         );
 
-        let gst_cuda_ctx =
-            gst_cuda_ffi::CUDAContext::new(0).expect("Failed to create CUDA context");
-        let raw_buffer = GsCUDABuf::new(render_node, gst_cuda_ctx, drm_video_info.clone());
+        let gst_cuda_ctx = CUDAContext::new(0).expect("Failed to create CUDA context");
+        let raw_buffer = GsCUDABuf::new(render_node, gst_cuda_ctx.clone(), drm_video_info.clone());
         assert!(raw_buffer.is_some());
 
         let mut buffer = GsBufferType::CUDA(raw_buffer.clone().unwrap());
