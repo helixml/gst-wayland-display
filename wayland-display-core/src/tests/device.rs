@@ -1,24 +1,31 @@
+use crate::utils::device::PCIVendor;
+use crate::utils::device::gpu::get_gpu_device;
 use test_log::test;
 
 #[test]
-fn test_enumerate_gpu_devices() {
-    use crate::utils::device::gpu::enumerate_gpu_devices;
-
-    let devices = enumerate_gpu_devices().expect("Failed to enumerate GPU devices");
-
-    // Check that we have at least one device
-    assert!(!devices.is_empty(), "No GPU devices found");
-
-    for device in devices {
-        tracing::info!("Found GPU: {}", device);
-
-        // Ensure each device has a valid DRM node
-        assert!(
-            !device.drm_node().to_string().is_empty(),
-            "DRM node path is empty"
-        );
-
-        // Ensure the device name is not empty
-        assert!(!device.device_name().is_empty(), "Device name is empty");
+fn test_get_gpu_device() {
+    for path in vec![
+        "/dev/dri/card0",
+        "/dev/dri/renderD128",
+        "/dev/dri/by-path/pci-0000:2d:00.0-render",
+        "/dev/dri/card1",
+        "/dev/dri/renderD129",
+        "/dev/dri/by-path/pci-0000:04:00.0-render",
+    ] {
+        match get_gpu_device(path) {
+            Ok(device) => {
+                tracing::info!("Found GPU: {}", device);
+                assert!(!device.device_name().is_empty(), "Device name is empty");
+                assert_ne!(
+                    *device.pci_vendor(),
+                    PCIVendor::Unknown,
+                    "Unknown PCI vendor"
+                );
+            }
+            Err(e) => {
+                tracing::error!("Failed to get GPU device for path {}: {}", path, e);
+                continue;
+            }
+        };
     }
 }

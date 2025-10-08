@@ -1,19 +1,16 @@
 use crate::utils::device::PCIVendor;
 use smithay::backend::drm::DrmNode;
-use smithay::backend::egl::EGLDevice;
 use std::error::Error;
+use std::fs;
+use std::os::unix::fs::MetadataExt;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GPUDevice {
-    drm_node: DrmNode,
     pci_vendor: PCIVendor,
     device_name: String,
 }
 impl GPUDevice {
-    pub fn drm_node(&self) -> &DrmNode {
-        &self.drm_node
-    }
-
     pub fn pci_vendor(&self) -> &PCIVendor {
         &self.pci_vendor
     }
@@ -23,58 +20,43 @@ impl GPUDevice {
     }
 }
 impl TryFrom<DrmNode> for GPUDevice {
-    type Error = Box<dyn std::error::Error>;
+    type Error = Box<dyn Error>;
     fn try_from(drm_node: DrmNode) -> Result<Self, Self::Error> {
-        let devices = enumerate_gpu_devices()?;
-        if let Some(device) = devices.iter().find(|d| d.drm_node == drm_node) {
-            Ok(device.clone())
-        } else {
-            Err("No GPU device for given DRM node".into())
-        }
+        get_gpu_device(drm_node.dev_path().unwrap().to_str().unwrap())
     }
 }
 impl std::fmt::Display for GPUDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "GPUDevice {{ drm_node: {}, pci_vendor: {}, device_name: {} }}",
-            self.drm_node, self.pci_vendor, self.device_name
+            "GPUDevice {{ pci_vendor: {}, device_name: {} }}",
+            self.pci_vendor, self.device_name
         )
     }
 }
 
-pub fn enumerate_gpu_devices() -> Result<Vec<GPUDevice>, Box<dyn Error>> {
-    EGLDevice::enumerate()?
-        .filter(|dev| !dev.is_software())
-        .map(|dev| -> Result<GPUDevice, Box<dyn Error>> {
-            let drm_path = dev.drm_device_path()?;
-            let drm_node = DrmNode::from_path(drm_path)?;
-            let minor = drm_node.minor();
-            let vendor_str =
-                std::fs::read_to_string(format!("/sys/class/drm/card{}/device/vendor", minor))?;
-            let vendor_str = vendor_str.trim_start_matches("0x").trim_end_matches('\n');
-            let vendor = u32::from_str_radix(&vendor_str, 16)?;
+pub fn get_gpu_device(path: &str) -> Result<GPUDevice, Box<dyn Error>> {
+    let card = get_card_from_render_node(path)?;
+    let vendor_str = fs::read_to_string(format!("/sys/class/drm/{}/device/vendor", card))?;
+    let vendor_str = vendor_str.trim_start_matches("0x").trim_end_matches('\n');
+    let vendor = u32::from_str_radix(&vendor_str, 16)?;
 
-            let device_id =
-                std::fs::read_to_string(format!("/sys/class/drm/card{}/device/device", minor))?;
-            let device_id = device_id.trim_start_matches("0x").trim_end_matches('\n');
+    let device_id = fs::read_to_string(format!("/sys/class/drm/{}/device/device", card))?;
+    let device_id = device_id.trim_start_matches("0x").trim_end_matches('\n');
 
-            // Look up in hwdata PCI database
-            let device_name = match std::fs::read_to_string("/usr/share/hwdata/pci.ids") {
-                Ok(pci_ids) => parse_pci_ids(&pci_ids, device_id).unwrap_or("".to_owned()),
-                Err(e) => {
-                    tracing::warn!("Failed to read /usr/share/hwdata/pci.ids: {}", e);
-                    "".to_owned()
-                }
-            };
+    // Look up in hwdata PCI database
+    let device_name = match fs::read_to_string("/usr/share/hwdata/pci.ids") {
+        Ok(pci_ids) => parse_pci_ids(&pci_ids, device_id).unwrap_or("".to_owned()),
+        Err(e) => {
+            tracing::warn!("Failed to read /usr/share/hwdata/pci.ids: {}", e);
+            "".to_owned()
+        }
+    };
 
-            Ok(GPUDevice {
-                drm_node,
-                pci_vendor: PCIVendor::try_from(vendor)?,
-                device_name,
-            })
-        })
-        .collect()
+    Ok(GPUDevice {
+        pci_vendor: PCIVendor::try_from(vendor)?,
+        device_name,
+    })
 }
 
 fn parse_pci_ids(pci_data: &str, device_id: &str) -> Option<String> {
@@ -87,4 +69,48 @@ fn parse_pci_ids(pci_data: &str, device_id: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn get_card_from_render_node(render_path: &str) -> std::io::Result<String> {
+    // Get the device's sysfs path
+    let metadata = fs::metadata(render_path)?;
+    let rdev = metadata.rdev();
+    let major = gnu_dev_major(rdev);
+    let minor = gnu_dev_minor(rdev);
+
+    // The sysfs path for the device
+    let sys_path = format!("/sys/dev/char/{}:{}", major, minor);
+
+    // Read the device symlink to get the actual device
+    let device_link = PathBuf::from(&sys_path).join("device");
+    let device_real = fs::canonicalize(device_link)?;
+
+    // Now find card* entries under the same device
+    let drm_path = device_real.join("drm");
+    for entry in fs::read_dir(drm_path)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("card") && !name.contains('-') {
+            return Ok(name);
+        }
+    }
+
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        "No card found",
+    ))
+}
+
+fn gnu_dev_major(dev: u64) -> u32 {
+    let mut major = 0;
+    major |= ((dev >> 8) & 0xfff) as u32;
+    major |= ((dev >> 32) & 0xfffff000) as u32;
+    major
+}
+
+fn gnu_dev_minor(dev: u64) -> u32 {
+    let mut minor = 0;
+    minor |= (dev & 0xff) as u32;
+    minor |= ((dev >> 12) & 0xffffff00) as u32;
+    minor
 }
