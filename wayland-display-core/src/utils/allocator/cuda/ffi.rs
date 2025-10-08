@@ -28,6 +28,8 @@ macro_rules! cuda_call {
 }
 
 type GstCudaStream = *mut c_void;
+pub(crate) type GstBufferPool = *mut c_void;
+pub(crate) type GstCudaStreamHandle = *mut c_void;
 
 #[repr(C)]
 pub(crate) struct CUeglFrame {
@@ -193,6 +195,11 @@ unsafe extern "C" {
     fn gst_cuda_context_push(context: *mut GstCudaContext) -> glib_ffi::gboolean;
     fn gst_cuda_context_pop(pctx: *mut CUcontext) -> glib_ffi::gboolean;
 
+    // GstCudaStream functions
+    pub(crate) fn gst_cuda_stream_new(context: *mut GstCudaContext) -> GstCudaStreamHandle;
+    pub(crate) fn gst_cuda_stream_ref(stream: GstCudaStreamHandle);
+    pub(crate) fn gst_cuda_stream_unref(stream: GstCudaStreamHandle);
+
     // GstCudaMemory functions
     fn gst_cuda_allocator_alloc(
         allocator: *mut gst_ffi::GstAllocator,
@@ -214,6 +221,12 @@ unsafe extern "C" {
     fn gst_is_cuda_memory(mem: *mut gst_ffi::GstMemory) -> glib_ffi::gboolean;
 
     pub(crate) fn gst_cuda_memory_init_once() -> c_void;
+
+    pub(crate) fn gst_cuda_buffer_pool_new(context: *mut GstCudaContext) -> GstBufferPool;
+    pub(crate) fn gst_buffer_pool_config_set_cuda_stream(
+        config: *mut gst_ffi::GstStructure,
+        stream: GstCudaStreamHandle,
+    );
 
     fn gst_cuda_stream_get_handle(stream: GstCudaStream) -> CUstream;
 
@@ -245,25 +258,78 @@ impl Drop for CudaContextGuard {
     }
 }
 
+pub(crate) const GST_BUFFER_POOL_OPTION_VIDEO_META: &[u8] = b"GstBufferPoolOptionVideoMeta\0";
+const GST_MAP_CUDA: u32 = gst_ffi::GST_MAP_FLAG_LAST << 1;
+
 pub(crate) fn alloc_copy_gst_memory(
     egl_frame: CUeglFrame,
     cuda_context: &CUDAContext,
     dma_video_info: VideoInfoDmaDrm,
+    buffer_pool: Option<GstBufferPool>,
 ) -> Result<gst::memory::Memory, Box<dyn std::error::Error>> {
     let mut video_info = gst_dma_video_info_to_video_info(&dma_video_info)?;
-    let stream = unsafe { std::mem::zeroed() };
-    let gst_memory = unsafe {
-        gst_cuda_allocator_alloc(ptr::null_mut(), cuda_context.ptr, stream, &mut video_info)
+
+    let (gst_memory, stream) = if let Some(pool) = buffer_pool {
+        // Acquire buffer from pool
+        let mut gst_buffer: *mut gst_ffi::GstBuffer = ptr::null_mut();
+        let result = unsafe {
+            gst::ffi::gst_buffer_pool_acquire_buffer(
+                pool as *mut gst::ffi::GstBufferPool,
+                &mut gst_buffer,
+                ptr::null_mut(),
+            )
+        };
+
+        if result != gst_ffi::GST_FLOW_OK {
+            return Err(format!("Failed to acquire buffer from pool: {}", result).into());
+        }
+
+        if gst_buffer.is_null() {
+            return Err("Acquired buffer is null".into());
+        }
+
+        // Get the memory from the buffer
+        let gst_memory = unsafe { gst_ffi::gst_buffer_peek_memory(gst_buffer, 0) };
+        if gst_memory.is_null() {
+            unsafe { gst_ffi::gst_buffer_unref(gst_buffer) };
+            return Err("Failed to get memory from pooled buffer".into());
+        }
+
+        // We need to ref the memory since we're returning it separately
+        unsafe { gst_ffi::gst_memory_ref(gst_memory) };
+
+        // Unref the buffer (the memory is still valid since we ref'd it)
+        unsafe { gst_ffi::gst_buffer_unref(gst_buffer) };
+
+        let cuda_stream = cuda_context
+            .stream
+            .clone()
+            .expect("Cuda context without a stream");
+
+        (gst_memory, cuda_stream.stream)
+    } else {
+        // Fallback to direct allocation
+        let stream = unsafe { std::mem::zeroed() };
+        let gst_memory = unsafe {
+            gst_cuda_allocator_alloc(ptr::null_mut(), cuda_context.ptr, stream, &mut video_info)
+        };
+        if gst_memory.is_null() {
+            return Err("Failed to allocate GST CUDA memory".into());
+        }
+        (gst_memory, stream)
     };
-    if gst_memory.is_null() {
-        return Err("Failed to allocate GST CUDA memory".into());
-    }
+
     let stream_handle = unsafe { gst_cuda_stream_get_handle(stream) };
 
     // Map the GStreamer memory to get destination device pointer
     let mut map_info: gst_ffi::GstMapInfo = unsafe { std::mem::zeroed() };
-    let map_success =
-        unsafe { gst_ffi::gst_memory_map(gst_memory, &mut map_info, gst_ffi::GST_MAP_WRITE) };
+    let map_success = unsafe {
+        gst_ffi::gst_memory_map(
+            gst_memory,
+            &mut map_info,
+            gst_ffi::GST_MAP_WRITE | GST_MAP_CUDA,
+        )
+    };
 
     if map_success == glib_ffi::GFALSE {
         unsafe { gst_ffi::gst_memory_unref(gst_memory) };

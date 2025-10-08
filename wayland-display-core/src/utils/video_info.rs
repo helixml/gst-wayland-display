@@ -5,6 +5,7 @@ use gst_video::{VideoInfo, VideoInfoDmaDrm};
 pub struct CUDAParams {
     pub video_info: VideoInfoDmaDrm,
     pub cuda_context: cuda::CUDAContext,
+    pub buffer_pool: Option<cuda::CUDABufferPool>,
 }
 
 #[derive(Debug, Clone)]

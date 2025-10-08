@@ -3,7 +3,8 @@ use ffi::{CUDA_SUCCESS, CUgraphicsResource, cuda_result_to_string};
 use ffi::{GstCudaContext, PFN_eglDestroyImageKHR, eglGetProcAddress};
 use gst::glib::ffi as glib_ffi;
 use gst::glib::translate::ToGlibPtr;
-use gst::{Buffer as GstBuffer, Element, QueryRef};
+use gst::query::Allocation;
+use gst::{Buffer as GstBuffer, BufferPool, Element, QueryRef};
 use gst_video::{VideoFormat, VideoInfoDmaDrm, VideoMeta};
 use smithay::backend::allocator::Buffer;
 use smithay::backend::allocator::dmabuf::Dmabuf;
@@ -161,12 +162,227 @@ pub fn init_cuda() -> Result<(), String> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct CUDAContext {
     ptr: *mut GstCudaContext,
+    stream: Option<StreamHandle>,
 }
+
+impl Drop for CUDAContext {
+    fn drop(&mut self) {
+        unsafe {
+            gst::ffi::gst_object_unref(self.ptr as *mut gst::ffi::GstObject);
+        }
+    }
+}
+
+impl Clone for CUDAContext {
+    fn clone(&self) -> Self {
+        unsafe {
+            gst::ffi::gst_object_ref(self.ptr as *mut gst::ffi::GstObject);
+        }
+        CUDAContext {
+            ptr: self.ptr,
+            stream: self.stream.clone(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct StreamHandle {
+    stream: ffi::GstCudaStreamHandle,
+}
+
+impl Drop for StreamHandle {
+    fn drop(&mut self) {
+        unsafe {
+            ffi::gst_cuda_stream_unref(self.stream);
+        }
+    }
+}
+
+impl Clone for StreamHandle {
+    fn clone(&self) -> Self {
+        unsafe {
+            ffi::gst_cuda_stream_ref(self.stream);
+        }
+        StreamHandle {
+            stream: self.stream,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct CUDABufferPool {
+    pool: ffi::GstBufferPool,
+}
+
+impl CUDABufferPool {
+    pub fn new(cudacontext: &CUDAContext) -> Result<Self, String> {
+        let pool = unsafe { ffi::gst_cuda_buffer_pool_new(cudacontext.ptr) };
+        if pool.is_null() {
+            Err("Failed to create CUDA buffer pool".into())
+        } else {
+            Ok(CUDABufferPool { pool })
+        }
+    }
+
+    pub fn from(_pool: &BufferPool) -> Result<Self, String> {
+        // TODO: check if GST_IS_CUDA_BUFFER_POOL(pool)
+        // TODO: wrap the pool in our buffer
+        tracing::debug!("CUDABufferPool::from not implemented, falling back to create a new one..");
+        Err("Not implemented".into())
+    }
+
+    pub fn configure(
+        &self,
+        caps: &gst::Caps,
+        stream_handle: &StreamHandle,
+        size: u32,
+        min_buffers: u32,
+        max_buffers: u32,
+    ) -> Result<(), String> {
+        let config = unsafe {
+            gst::ffi::gst_buffer_pool_get_config(self.pool as *mut gst::ffi::GstBufferPool)
+        };
+        if config.is_null() {
+            return Err("Failed to get buffer pool config".into());
+        }
+
+        // TODO: support getting the stream handler too here
+        //       https://github.com/GStreamer/gstreamer/blob/c5a470e5164ce7fa8fd5fa80650d9ee35ce214d8/subprojects/gst-plugins-bad/sys/nvcodec/gstcudaconvertscale.c#L1293-L1300
+        //       ultimately it doesn't matter for us because we are creating a new pool every time
+
+        // Configure the pool
+        unsafe {
+            // Set the CUDA stream in the config
+            ffi::gst_buffer_pool_config_set_cuda_stream(config, stream_handle.stream);
+
+            gst::ffi::gst_buffer_pool_config_add_option(
+                config,
+                ffi::GST_BUFFER_POOL_OPTION_VIDEO_META.as_ptr() as *const c_char,
+            );
+            gst::ffi::gst_buffer_pool_config_set_params(
+                config,
+                caps.to_glib_none().0,
+                size,
+                min_buffers,
+                max_buffers,
+            );
+        }
+
+        // Set the configuration
+        let result = unsafe {
+            gst::ffi::gst_buffer_pool_set_config(self.pool as *mut gst::ffi::GstBufferPool, config)
+        };
+        if result == glib_ffi::GFALSE {
+            Err("Failed to set buffer pool config".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn get_updated_size(&self) -> Result<u32, String> {
+        let config = unsafe {
+            gst::ffi::gst_buffer_pool_get_config(self.pool as *mut gst::ffi::GstBufferPool)
+        };
+        if config.is_null() {
+            return Err("Failed to get buffer pool config".into());
+        }
+
+        let mut size = 0;
+        unsafe {
+            gst::ffi::gst_buffer_pool_config_get_params(
+                config,
+                ptr::null_mut(),
+                &mut size,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            );
+        }
+        Ok(size)
+    }
+
+    pub fn activate(&self) -> Result<(), String> {
+        let result = unsafe {
+            gst::ffi::gst_buffer_pool_set_active(
+                self.pool as *mut gst::ffi::GstBufferPool,
+                glib_ffi::GTRUE,
+            )
+        };
+        if result == glib_ffi::GFALSE {
+            Err("Failed to activate buffer pool".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn set_nth_allocation_pool(
+        &self,
+        query: &mut Allocation,
+        idx: u32,
+        size: u32,
+        min_buffers: u32,
+        max_buffers: u32,
+    ) {
+        unsafe {
+            gst::ffi::gst_query_set_nth_allocation_pool(
+                query.as_mut_ptr(),
+                idx,
+                self.pool as *mut gst::ffi::GstBufferPool,
+                size,
+                min_buffers,
+                max_buffers,
+            );
+        }
+    }
+
+    pub fn add_allocation_pool(
+        &self,
+        query: &mut Allocation,
+        size: u32,
+        min_buffers: u32,
+        max_buffers: u32,
+    ) {
+        unsafe {
+            gst::ffi::gst_query_add_allocation_pool(
+                query.as_mut_ptr(),
+                self.pool as *mut gst::ffi::GstBufferPool,
+                size,
+                min_buffers,
+                max_buffers,
+            )
+        }
+    }
+}
+
+impl Drop for CUDABufferPool {
+    fn drop(&mut self) {
+        unsafe {
+            // TODO: if this is the last reference we should call:
+            //      ffi::gst_buffer_pool_set_active(self.pool, glib_ffi::GFALSE);
+            gst::glib::gobject_ffi::g_object_unref(
+                self.pool as *mut gst::glib::gobject_ffi::GObject,
+            );
+        }
+    }
+}
+
+impl Clone for CUDABufferPool {
+    fn clone(&self) -> Self {
+        unsafe {
+            gst::glib::gobject_ffi::g_object_ref(self.pool as *mut gst::glib::gobject_ffi::GObject);
+        }
+        CUDABufferPool { pool: self.pool }
+    }
+}
+
 unsafe impl Send for CUDAContext {}
 unsafe impl Sync for CUDAContext {}
+unsafe impl Send for CUDABufferPool {}
+unsafe impl Sync for CUDABufferPool {}
+unsafe impl Send for StreamHandle {}
+unsafe impl Sync for StreamHandle {}
 
 impl CUDAContext {
     pub fn new(device_id: c_uint) -> Result<Self, String> {
@@ -174,11 +390,26 @@ impl CUDAContext {
         if ptr.is_null() {
             return Err("Failed to create CUDA context".into());
         }
-        Ok(CUDAContext { ptr })
+
+        // Create a CUDA stream
+        let stream = unsafe { ffi::gst_cuda_stream_new(ptr) };
+
+        Ok(CUDAContext {
+            ptr,
+            stream: if stream.is_null() {
+                None
+            } else {
+                Some(StreamHandle { stream })
+            },
+        })
     }
 
     pub fn as_ptr(&self) -> *mut GstCudaContext {
         self.ptr
+    }
+
+    pub fn stream(&self) -> Option<&StreamHandle> {
+        self.stream.as_ref()
     }
 }
 
@@ -206,6 +437,7 @@ impl CUDAImage {
         &self,
         dma_video_info: VideoInfoDmaDrm,
         cuda_context: &CUDAContext,
+        buffer_pool: &Option<CUDABufferPool>,
     ) -> Result<GstBuffer, Box<dyn std::error::Error>> {
         let _cuda_context_guard = ffi::CudaContextGuard::new(cuda_context)?;
 
@@ -218,8 +450,12 @@ impl CUDAImage {
         ))?;
 
         // Create Gstreamer memory
-        let gst_memory =
-            ffi::alloc_copy_gst_memory(egl_frame, cuda_context, dma_video_info.clone())?;
+        let gst_memory = ffi::alloc_copy_gst_memory(
+            egl_frame,
+            cuda_context,
+            dma_video_info.clone(),
+            buffer_pool.as_ref().map(|p| p.pool),
+        )?;
 
         // Create the buffer using GStreamer Rust bindings
         let mut buffer = gst::Buffer::new();

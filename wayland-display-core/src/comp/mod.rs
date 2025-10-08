@@ -357,6 +357,7 @@ pub(crate) fn init(
                                     render_node.unwrap(),
                                     base_info.cuda_context,
                                     base_info.video_info,
+                                    base_info.buffer_pool,
                                 )
                                 .expect("Failed to create GsCUDABuf");
                                 state.output_buffer = Some(GsBufferType::CUDA(allocator));

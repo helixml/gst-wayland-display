@@ -1,7 +1,9 @@
 pub mod cuda;
 
 use crate::DrmModifier;
-use crate::utils::allocator::cuda::{CUDAContext, CUDAImage, EGLImage, EglExtensions};
+use crate::utils::allocator::cuda::{
+    CUDABufferPool, CUDAContext, CUDAImage, EGLImage, EglExtensions,
+};
 use gst::Buffer as GstBuffer;
 use gst_video::{VideoFormat, VideoInfo, VideoInfoDmaDrm, VideoMeta};
 use gstreamer_allocators::{DmaBufAllocator, FdMemoryFlags};
@@ -128,6 +130,7 @@ pub struct GsCUDABuf {
     buffer: Dmabuf,
     video_info: VideoInfoDmaDrm,
     cuda_context: CUDAContext,
+    buffer_pool: Option<CUDABufferPool>,
     egl_extensions: EglExtensions,
 }
 
@@ -136,6 +139,7 @@ impl GsCUDABuf {
         render_node: DrmNode,
         cuda_context: CUDAContext,
         video_info: VideoInfoDmaDrm,
+        buffer_pool: Option<CUDABufferPool>,
     ) -> Option<Self> {
         tracing::debug!("Creating CUDA buffer from {:?}", &video_info);
         let drm_fourcc = gst_video_format_to_drm_fourcc(&video_info)?;
@@ -162,6 +166,7 @@ impl GsCUDABuf {
                 buffer,
                 video_info,
                 cuda_context,
+                buffer_pool,
                 egl_extensions: EglExtensions::new().expect("Failed to get EGL extensions"),
             }),
             Err(_) => {
@@ -319,7 +324,11 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
                     .expect("Failed to create CUDA image from EGLImage");
 
                 cuda_image
-                    .to_gst_buffer(buffer.video_info.clone(), &buffer.cuda_context)
+                    .to_gst_buffer(
+                        buffer.video_info.clone(),
+                        &buffer.cuda_context,
+                        &buffer.buffer_pool,
+                    )
                     .expect("Failed to create Gstreamer buffer from CUDA image")
             }
         }
@@ -586,7 +595,37 @@ mod tests {
         );
 
         let gst_cuda_ctx = CUDAContext::new(0).expect("Failed to create CUDA context");
-        let raw_buffer = GsCUDABuf::new(render_node, gst_cuda_ctx.clone(), drm_video_info.clone());
+
+        let cuda_caps = gst_video::VideoCapsBuilder::new()
+            .features([cuda::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
+            .format(VideoFormat::Abgr)
+            .height(10)
+            .width(10)
+            .pixel_aspect_ratio(1.into())
+            .framerate(gst::Fraction::new(30, 1))
+            .build();
+        let buffer_pool = CUDABufferPool::new(&gst_cuda_ctx).expect("Failed to create buffer pool");
+        buffer_pool
+            .configure(
+                &cuda_caps,
+                gst_cuda_ctx
+                    .stream()
+                    .expect("Cuda context without a stream"),
+                drm_video_info.size() as u32,
+                0,
+                0,
+            )
+            .expect("Failed to configure buffer pool");
+        buffer_pool
+            .activate()
+            .expect("Failed to activate buffer pool");
+
+        let raw_buffer = GsCUDABuf::new(
+            render_node,
+            gst_cuda_ctx.clone(),
+            drm_video_info.clone(),
+            Some(buffer_pool),
+        );
         assert!(raw_buffer.is_some());
 
         let mut buffer = GsBufferType::CUDA(raw_buffer.clone().unwrap());
