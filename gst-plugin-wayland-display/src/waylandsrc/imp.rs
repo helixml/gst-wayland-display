@@ -534,9 +534,11 @@ impl BaseSrcImpl for WaylandDisplaySrc {
             (CUDABufferPool::new(&cuda_ctx), false, size, 0, 0)
         } else {
             tracing::info!("Using existing allocation pools");
-            let (pool, size, min, max) = pools.get(0).unwrap();
+            let (_pool, size, min, max) = pools.get(0).unwrap();
+            // TODO: check if GST_IS_CUDA_BUFFER_POOL(pool)
+            // TODO: wrap the pool in our buffer
             (
-                CUDABufferPool::from(pool.as_ref().unwrap()).or(CUDABufferPool::new(&cuda_ctx)),
+                CUDABufferPool::new(&cuda_ctx),
                 true,
                 *size,
                 *min,

@@ -227,13 +227,6 @@ impl CUDABufferPool {
         }
     }
 
-    pub fn from(_pool: &BufferPool) -> Result<Self, String> {
-        // TODO: check if GST_IS_CUDA_BUFFER_POOL(pool)
-        // TODO: wrap the pool in our buffer
-        tracing::debug!("CUDABufferPool::from not implemented, falling back to create a new one..");
-        Err("Not implemented".into())
-    }
-
     pub fn configure(
         &self,
         caps: &gst::Caps,
