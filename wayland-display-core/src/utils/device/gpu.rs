@@ -46,7 +46,7 @@ pub fn get_gpu_device(path: &str) -> Result<GPUDevice, Box<dyn Error>> {
 
     // Look up in hwdata PCI database
     let device_name = match fs::read_to_string("/usr/share/hwdata/pci.ids") {
-        Ok(pci_ids) => parse_pci_ids(&pci_ids, device_id).unwrap_or("".to_owned()),
+        Ok(pci_ids) => parse_pci_ids(&pci_ids, vendor_str, device_id).unwrap_or("".to_owned()),
         Err(e) => {
             tracing::warn!("Failed to read /usr/share/hwdata/pci.ids: {}", e);
             "".to_owned()
@@ -59,15 +59,36 @@ pub fn get_gpu_device(path: &str) -> Result<GPUDevice, Box<dyn Error>> {
     })
 }
 
-fn parse_pci_ids(pci_data: &str, device_id: &str) -> Option<String> {
+fn parse_pci_ids(pci_data: &str, vendor_id: &str, device_id: &str) -> Option<String> {
+    let mut current_vendor = String::new();
+    let vendor_id = vendor_id.to_lowercase();
+    let device_id = device_id.to_lowercase();
+
     for line in pci_data.lines() {
-        if let Some(stripped) = line.strip_prefix(&format!("\t{}", device_id)) {
-            if stripped.starts_with("  ") {
-                let device_name = stripped.trim();
-                return Some(device_name.to_owned());
+        // Skip comments and empty lines
+        if line.starts_with('#') || line.is_empty() {
+            continue;
+        }
+
+        // Check for vendor lines (no leading whitespace)
+        if !line.starts_with(['\t', ' ']) {
+            let mut parts = line.splitn(2, ' ');
+            if let (Some(vendor), Some(_)) = (parts.next(), parts.next()) {
+                current_vendor = vendor.to_lowercase();
+            }
+            continue;
+        }
+
+        // Check for device lines (leading whitespace)
+        let line = line.trim_start();
+        let mut parts = line.splitn(2, ' ');
+        if let (Some(dev_id), Some(desc)) = (parts.next(), parts.next()) {
+            if dev_id.to_lowercase() == device_id && current_vendor == vendor_id {
+                return Some(desc.trim().to_owned());
             }
         }
     }
+
     None
 }
 
