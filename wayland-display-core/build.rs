@@ -25,6 +25,8 @@ fn main() {
         // Common CUDA installation paths
         println!("cargo:rustc-link-search=native=/usr/local/cuda/lib64");
         println!("cargo:rustc-link-search=native=/usr/local/cuda/lib");
+        println!("cargo:rustc-link-search=native=/opt/cuda/lib");
+        println!("cargo:rustc-link-search=native=/opt/cuda/lib64");
         println!("cargo:rustc-link-search=native=/usr/lib/x86_64-linux-gnu");
     }
 
