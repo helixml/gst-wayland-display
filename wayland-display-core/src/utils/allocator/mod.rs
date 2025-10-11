@@ -11,6 +11,7 @@ use smithay::backend::allocator::dmabuf::{Dmabuf, DmabufAllocator};
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::allocator::{Allocator, Buffer, Fourcc};
 use smithay::backend::drm::DrmNode;
+use smithay::backend::egl::ffi::egl::types::EGLDisplay;
 use smithay::backend::renderer::gles::{GlesError, GlesRenderbuffer, GlesRenderer, GlesTarget};
 use smithay::backend::renderer::{Bind, ExportMem, Offscreen, Renderer};
 use smithay::reexports::drm::buffer::DrmFourcc;
@@ -19,6 +20,7 @@ use smithay::reexports::rustix::fs::{SeekFrom, seek};
 use smithay::utils::{DeviceFd, Rectangle};
 use std::fs::File;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct GsGlesbuffer {
@@ -130,8 +132,11 @@ pub struct GsCUDABuf {
     buffer: Dmabuf,
     video_info: VideoInfoDmaDrm,
     cuda_context: CUDAContext,
-    buffer_pool: Option<CUDABufferPool>,
+    // TODO: Set in compositor by UpdateCUDABufferPool, is this fine/ideal?
+    pub(crate) buffer_pool: Option<CUDABufferPool>,
     egl_extensions: EglExtensions,
+    // Cached for CUDA needs
+    cuda_image: Arc<CUDAImage>,
 }
 
 impl GsCUDABuf {
@@ -140,6 +145,7 @@ impl GsCUDABuf {
         cuda_context: CUDAContext,
         video_info: VideoInfoDmaDrm,
         buffer_pool: Option<CUDABufferPool>,
+        egl_display: &EGLDisplay,
     ) -> Option<Self> {
         tracing::debug!("Creating CUDA buffer from {:?}", &video_info);
         let drm_fourcc = gst_video_format_to_drm_fourcc(&video_info)?;
@@ -162,13 +168,26 @@ impl GsCUDABuf {
         );
 
         match result {
-            Ok(buffer) => Some(GsCUDABuf {
-                buffer,
-                video_info,
-                cuda_context,
-                buffer_pool,
-                egl_extensions: EglExtensions::new().expect("Failed to get EGL extensions"),
-            }),
+            Ok(buffer) => {
+                let egl_extensions = EglExtensions::new().expect("Failed to get EGL extensions");
+
+                // Create EGLImage once during initialization
+                let egl_image = EGLImage::from(&buffer, egl_display, &egl_extensions)
+                    .expect("Failed to create EGLImage from DMA-BUF");
+
+                // Create CUDAImage once during initialization
+                let cuda_image = CUDAImage::from(&egl_image, &cuda_context)
+                    .expect("Failed to create CUDA image from EGLImage");
+
+                Some(GsCUDABuf {
+                    buffer,
+                    video_info,
+                    cuda_context,
+                    buffer_pool,
+                    egl_extensions,
+                    cuda_image: Arc::new(cuda_image),
+                })
+            }
             Err(_) => {
                 tracing::warn!("Failed to create DMA buffer: {}", result.unwrap_err());
                 None
@@ -314,23 +333,14 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
                 }
                 gst_buffer
             }
-            GsBufferType::CUDA(buffer) => {
-                let egl_display = renderer.egl_context().display().get_display_handle().handle;
-                let egl_image =
-                    EGLImage::from(&buffer.buffer, &egl_display, &buffer.egl_extensions)
-                        .expect("Failed to create EGLImage from DMA-BUF");
-
-                let cuda_image = CUDAImage::from(&egl_image, &buffer.cuda_context)
-                    .expect("Failed to create CUDA image from EGLImage");
-
-                cuda_image
-                    .to_gst_buffer(
-                        buffer.video_info.clone(),
-                        &buffer.cuda_context,
-                        &buffer.buffer_pool,
-                    )
-                    .expect("Failed to create Gstreamer buffer from CUDA image")
-            }
+            GsBufferType::CUDA(buffer) => buffer
+                .cuda_image
+                .to_gst_buffer(
+                    buffer.video_info.clone(),
+                    &buffer.cuda_context,
+                    &buffer.buffer_pool,
+                )
+                .expect("Failed to create Gstreamer buffer from CUDA image"),
         }
     }
 
@@ -620,11 +630,13 @@ mod tests {
             .activate()
             .expect("Failed to activate buffer pool");
 
+        let egl_display = renderer.egl_context().display().get_display_handle().handle;
         let raw_buffer = GsCUDABuf::new(
             render_node,
             gst_cuda_ctx.clone(),
             drm_video_info.clone(),
             Some(buffer_pool),
+            &egl_display,
         );
         assert!(raw_buffer.is_some());
 

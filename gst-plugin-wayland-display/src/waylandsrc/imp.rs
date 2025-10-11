@@ -537,13 +537,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
             let (_pool, size, min, max) = pools.get(0).unwrap();
             // TODO: check if GST_IS_CUDA_BUFFER_POOL(pool)
             // TODO: wrap the pool in our buffer
-            (
-                CUDABufferPool::new(&cuda_ctx),
-                true,
-                *size,
-                *min,
-                *max,
-            )
+            (CUDABufferPool::new(&cuda_ctx), true, *size, *min, *max)
         };
 
         match pool {
@@ -561,6 +555,11 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                 } else {
                     pool.add_allocation_pool(query, updated_size, min, max);
                 }
+
+                // Send the pool to the compositor
+                let _ = self
+                    .command_tx
+                    .send(Command::UpdateCUDABufferPool(pool.clone()));
 
                 settings.cudabuffer_pool = Some(pool);
             }

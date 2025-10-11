@@ -261,16 +261,13 @@ impl Drop for CudaContextGuard {
 pub(crate) const GST_BUFFER_POOL_OPTION_VIDEO_META: &[u8] = b"GstBufferPoolOptionVideoMeta\0";
 const GST_MAP_CUDA: u32 = gst_ffi::GST_MAP_FLAG_LAST << 1;
 
-pub(crate) fn alloc_copy_gst_memory(
-    egl_frame: CUeglFrame,
-    cuda_context: &CUDAContext,
-    dma_video_info: VideoInfoDmaDrm,
+pub(crate) fn acquire_or_alloc_buffer(
     buffer_pool: Option<GstBufferPool>,
-) -> Result<gst::memory::Memory, Box<dyn std::error::Error>> {
-    let mut video_info = gst_dma_video_info_to_video_info(&dma_video_info)?;
-
-    let (gst_memory, stream) = if let Some(pool) = buffer_pool {
-        // Acquire buffer from pool
+    cuda_context: &CUDAContext,
+    video_info: &VideoInfoDmaDrm,
+) -> Result<gst::Buffer, Box<dyn std::error::Error>> {
+    if let Some(pool) = buffer_pool {
+        // Use the pool if available
         let mut gst_buffer: *mut gst_ffi::GstBuffer = ptr::null_mut();
         let result = unsafe {
             gst::ffi::gst_buffer_pool_acquire_buffer(
@@ -288,40 +285,54 @@ pub(crate) fn alloc_copy_gst_memory(
             return Err("Acquired buffer is null".into());
         }
 
-        // Get the memory from the buffer
-        let gst_memory = unsafe { gst_ffi::gst_buffer_peek_memory(gst_buffer, 0) };
-        if gst_memory.is_null() {
-            unsafe { gst_ffi::gst_buffer_unref(gst_buffer) };
-            return Err("Failed to get memory from pooled buffer".into());
-        }
-
-        // We need to ref the memory since we're returning it separately
-        unsafe { gst_ffi::gst_memory_ref(gst_memory) };
-
-        // Unref the buffer (the memory is still valid since we ref'd it)
-        unsafe { gst_ffi::gst_buffer_unref(gst_buffer) };
-
-        let cuda_stream = cuda_context
-            .stream
-            .clone()
-            .expect("Cuda context without a stream");
-
-        (gst_memory, cuda_stream.stream)
+        Ok(unsafe { gst::Buffer::from_glib_full(gst_buffer) })
     } else {
         // Fallback to direct allocation
+        tracing::debug!("No buffer pool available, allocating directly");
+        let mut gst_video_info = gst_dma_video_info_to_video_info(video_info)?;
         let stream = unsafe { std::mem::zeroed() };
         let gst_memory = unsafe {
-            gst_cuda_allocator_alloc(ptr::null_mut(), cuda_context.ptr, stream, &mut video_info)
+            gst_cuda_allocator_alloc(
+                ptr::null_mut(),
+                cuda_context.ptr,
+                stream,
+                &mut gst_video_info,
+            )
         };
         if gst_memory.is_null() {
             return Err("Failed to allocate GST CUDA memory".into());
         }
-        (gst_memory, stream)
-    };
 
-    let stream_handle = unsafe { gst_cuda_stream_get_handle(stream) };
+        let mut buffer = gst::Buffer::new();
+        let buffer_ref = buffer.get_mut().unwrap();
+        buffer_ref.append_memory(unsafe { gst::Memory::from_glib_full(gst_memory) });
 
-    // Map the GStreamer memory to get destination device pointer
+        Ok(buffer)
+    }
+}
+
+pub(crate) fn copy_to_gst_buffer(
+    egl_frame: CUeglFrame,
+    gst_buffer: &mut gst::Buffer,
+    cuda_context: &CUDAContext,
+    dma_video_info: &VideoInfoDmaDrm,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let video_info = gst_dma_video_info_to_video_info(dma_video_info)?;
+
+    let stream_handle = cuda_context
+        .stream
+        .as_ref()
+        .map(|s| unsafe { gst_cuda_stream_get_handle(s.stream) })
+        .unwrap_or(unsafe { std::mem::zeroed() });
+
+    // Get memory from the buffer
+    let gst_memory = unsafe { gst_ffi::gst_buffer_peek_memory(gst_buffer.as_mut_ptr(), 0) };
+
+    if gst_memory.is_null() {
+        return Err("Failed to get memory from buffer".into());
+    }
+
+    // Map the GStreamer memory
     let mut map_info: gst_ffi::GstMapInfo = unsafe { std::mem::zeroed() };
     let map_success = unsafe {
         gst_ffi::gst_memory_map(
@@ -332,27 +343,27 @@ pub(crate) fn alloc_copy_gst_memory(
     };
 
     if map_success == glib_ffi::GFALSE {
-        unsafe { gst_ffi::gst_memory_unref(gst_memory) };
         return Err("Failed to map GStreamer CUDA memory".into());
     }
 
     let dst_device_ptr = map_info.data as CUdeviceptr;
 
-    // Copy from EGL frame to GStreamer memory for each plane
     let _cuda_context_guard = CudaContextGuard::new(cuda_context)?;
+
+    // Copy from EGL frame to GStreamer memory for each plane
     for plane in 0..egl_frame.plane_count as usize {
         let mut copy_params: CUDA_MEMCPY2D = unsafe { std::mem::zeroed() };
 
         // Set up source (from EGL frame)
         unsafe {
             match egl_frame.frame_type {
+                // Array type
                 0 => {
-                    // Array type
                     copy_params.srcMemoryType = CU_MEMORYTYPE_ARRAY;
                     copy_params.srcArray = egl_frame.frame.p_array[plane];
                 }
+                // Pitched pointer type
                 1 => {
-                    // Pitched pointer type
                     copy_params.srcMemoryType = CU_MEMORYTYPE_DEVICE;
                     copy_params.srcDevice = egl_frame.frame.p_pitch[plane] as CUdeviceptr;
                     copy_params.srcPitch = egl_frame.pitch as usize;
@@ -366,9 +377,8 @@ pub(crate) fn alloc_copy_gst_memory(
         copy_params.dstMemoryType = CU_MEMORYTYPE_DEVICE;
         copy_params.dstDevice = dst_device_ptr + video_info.offset[plane] as u64;
         copy_params.dstPitch = video_info.stride[plane] as usize;
-
-        // Set copy dimensions
         copy_params.WidthInBytes = video_info.stride[plane] as usize;
+        // Set copy dimensions
         copy_params.Height = match plane {
             0 => dma_video_info.height() as usize, // Y plane (or single plane)
             _ => {
@@ -384,17 +394,9 @@ pub(crate) fn alloc_copy_gst_memory(
         cuda_call!(CuMemcpy2DAsync(&copy_params, stream_handle))?;
     }
 
-    match cuda_call!(cuStreamSynchronize(stream_handle)) {
-        Ok(_) => {
-            unsafe { gst_ffi::gst_memory_unmap(gst_memory, &mut map_info) };
-            Ok(unsafe { gst::Memory::from_glib_full(gst_memory) })
-        }
-        Err(error) => {
-            unsafe { gst_ffi::gst_memory_unmap(gst_memory, &mut map_info) };
-            unsafe { gst_ffi::gst_memory_unref(gst_memory) };
-            Err(format!("Failed to synchronize CUDA stream: {}", error).into())
-        }
-    }
+    // Safe to unmap without synchronization as the copy is async
+    unsafe { gst_ffi::gst_memory_unmap(gst_memory, &mut map_info) };
+    Ok(())
 }
 
 pub(crate) fn cuda_result_to_string(result: CUresult) -> &'static str {
