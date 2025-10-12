@@ -139,7 +139,6 @@ fn gst_dma_video_info_to_video_info(
 
 #[link(name = "EGL")]
 unsafe extern "C" {
-    pub(crate) fn eglGetCurrentDisplay() -> EGLDisplay;
     pub(crate) fn eglGetProcAddress(procname: *const c_char) -> *mut c_void;
 }
 

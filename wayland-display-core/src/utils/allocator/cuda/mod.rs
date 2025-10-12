@@ -12,6 +12,7 @@ use smithay::backend::egl::ffi::egl::types::{EGLDisplay, EGLImageKHR, EGLint};
 use std::os::fd::AsRawFd;
 use std::os::raw::{c_char, c_uint};
 use std::ptr;
+use std::sync::Arc;
 
 mod ffi;
 
@@ -51,6 +52,7 @@ impl EglExtensions {
 pub struct EGLImage {
     image: EGLImageKHR,
     destroy_fn: PFN_eglDestroyImageKHR,
+    egl_display: Arc<EGLDisplay>,
 }
 
 impl EGLImage {
@@ -130,6 +132,7 @@ impl EGLImage {
         if egl_image != ffi::EGL_NO_IMAGE_KHR {
             Ok(EGLImage {
                 image: egl_image,
+                egl_display: Arc::new(egl_display.clone()),
                 destroy_fn: egl_ext.destroy_image,
             })
         } else {
@@ -141,7 +144,7 @@ impl EGLImage {
 impl Drop for EGLImage {
     fn drop(&mut self) {
         unsafe {
-            (self.destroy_fn)(ffi::eglGetCurrentDisplay(), self.image);
+            (self.destroy_fn)(*self.egl_display, self.image);
         }
     }
 }

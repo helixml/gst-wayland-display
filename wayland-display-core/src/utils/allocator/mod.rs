@@ -134,7 +134,10 @@ pub struct GsCUDABuf {
     cuda_context: CUDAContext,
     // TODO: Set in compositor by UpdateCUDABufferPool, is this fine/ideal?
     pub(crate) buffer_pool: Option<CUDABufferPool>,
+    #[allow(dead_code)]
     egl_extensions: EglExtensions,
+    #[allow(dead_code)]
+    egl_image: Arc<EGLImage>,
     // Cached for CUDA needs
     cuda_image: Arc<CUDAImage>,
 }
@@ -185,6 +188,7 @@ impl GsCUDABuf {
                     cuda_context,
                     buffer_pool,
                     egl_extensions,
+                    egl_image: Arc::new(egl_image),
                     cuda_image: Arc::new(cuda_image),
                 })
             }
