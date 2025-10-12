@@ -4,7 +4,7 @@ use ffi::{GstCudaContext, PFN_eglDestroyImageKHR, eglGetProcAddress};
 use gst::glib::ffi as glib_ffi;
 use gst::glib::translate::ToGlibPtr;
 use gst::query::Allocation;
-use gst::{Buffer as GstBuffer, BufferPool, Element, QueryRef};
+use gst::{Buffer as GstBuffer, Element, QueryRef};
 use gst_video::{VideoFormat, VideoInfoDmaDrm, VideoMeta};
 use smithay::backend::allocator::Buffer;
 use smithay::backend::allocator::dmabuf::Dmabuf;
@@ -12,6 +12,7 @@ use smithay::backend::egl::ffi::egl::types::{EGLDisplay, EGLImageKHR, EGLint};
 use std::os::fd::AsRawFd;
 use std::os::raw::{c_char, c_uint};
 use std::ptr;
+use std::sync::Arc;
 
 mod ffi;
 
@@ -47,9 +48,11 @@ impl EglExtensions {
     }
 }
 
+#[derive(Debug)]
 pub struct EGLImage {
     image: EGLImageKHR,
     destroy_fn: PFN_eglDestroyImageKHR,
+    egl_display: Arc<EGLDisplay>,
 }
 
 impl EGLImage {
@@ -129,6 +132,7 @@ impl EGLImage {
         if egl_image != ffi::EGL_NO_IMAGE_KHR {
             Ok(EGLImage {
                 image: egl_image,
+                egl_display: Arc::new(egl_display.clone()),
                 destroy_fn: egl_ext.destroy_image,
             })
         } else {
@@ -140,7 +144,7 @@ impl EGLImage {
 impl Drop for EGLImage {
     fn drop(&mut self) {
         unsafe {
-            (self.destroy_fn)(ffi::eglGetCurrentDisplay(), self.image);
+            (self.destroy_fn)(*self.egl_display, self.image);
         }
     }
 }
@@ -406,6 +410,7 @@ impl CUDAContext {
     }
 }
 
+#[derive(Debug)]
 pub struct CUDAImage {
     cuda_graphic_resource: CUgraphicsResource,
 }
@@ -442,40 +447,37 @@ impl CUDAImage {
             0
         ))?;
 
-        // Create Gstreamer memory
-        let gst_memory = ffi::alloc_copy_gst_memory(
-            egl_frame,
-            cuda_context,
-            dma_video_info.clone(),
+        // Acquire buffer from pool or allocate directly
+        let mut buffer = ffi::acquire_or_alloc_buffer(
             buffer_pool.as_ref().map(|p| p.pool),
+            cuda_context,
+            &dma_video_info,
         )?;
 
-        // Create the buffer using GStreamer Rust bindings
-        let mut buffer = gst::Buffer::new();
-        {
-            let buffer_ref = buffer.get_mut().unwrap();
-            buffer_ref.append_memory(gst_memory);
+        // Copy data to the buffer
+        ffi::copy_to_gst_buffer(egl_frame, &mut buffer, cuda_context, &dma_video_info)?;
 
-            let video_format = match VideoFormat::from_fourcc(dma_video_info.fourcc()) {
-                VideoFormat::Unknown => {
-                    tracing::debug!(
-                        "Failed to convert fourcc to video format: {:?}",
-                        dma_video_info.fourcc()
-                    );
-                    VideoFormat::Bgrx // Fallback
-                }
-                format => format,
-            };
+        // Add video meta
+        let video_format = match VideoFormat::from_fourcc(dma_video_info.fourcc()) {
+            VideoFormat::Unknown => {
+                tracing::debug!(
+                    "Failed to convert fourcc to video format: {:?}",
+                    dma_video_info.fourcc()
+                );
+                VideoFormat::Bgrx // Fallback
+            }
+            format => format,
+        };
 
-            VideoMeta::add(
-                buffer_ref,
-                gst_video::VideoFrameFlags::empty(),
-                video_format,
-                dma_video_info.width(),
-                dma_video_info.height(),
-                // TODO: Add stride and offset metadata here
-            )?;
-        }
+        let buffer_ref = buffer.get_mut().unwrap();
+        VideoMeta::add(
+            buffer_ref,
+            gst_video::VideoFrameFlags::empty(),
+            video_format,
+            dma_video_info.width(),
+            dma_video_info.height(),
+            // TODO: Add stride and offset metadata here
+        )?;
 
         Ok(buffer)
     }

@@ -2,6 +2,8 @@ use smithay::backend::SwapBuffersError;
 use smithay::backend::drm::CreateDrmNodeError;
 pub use smithay::reexports::calloop::channel::{Channel, Sender, channel};
 
+use crate::utils::allocator::cuda::CUDABufferPool;
+use crate::utils::device::gpu::GPUDevice;
 pub use smithay::backend::allocator::{
     Format as DrmFormat, Fourcc, Modifier as DrmModifier, Vendor as DrmVendor, format::FormatSet,
 };
@@ -12,8 +14,6 @@ use std::str::FromStr;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread::JoinHandle;
 use utils::RenderTarget;
-
-use crate::utils::device::gpu::GPUDevice;
 
 pub(crate) mod comp;
 #[cfg(test)]
@@ -30,6 +30,7 @@ pub enum Command {
         SyncSender<Result<gst::Buffer, SwapBuffersError>>,
         Option<Tracer>,
     ),
+    UpdateCUDABufferPool(CUDABufferPool),
     KeyboardInput(u32, KeyState),
     PointerMotion(Point<f64, Logical>),
     PointerMotionAbsolute(Point<f64, Logical>),
