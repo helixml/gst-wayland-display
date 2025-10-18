@@ -8,7 +8,7 @@ use gst_video::{VideoCapsBuilder, VideoFormat, VideoInfo, VideoInfoDmaDrm};
 use crate::utils::{CAT, GstLayer};
 use gst::query::Allocation;
 use gst::subclass::prelude::*;
-use gst::{Event, Fraction, glib};
+use gst::{Context, Event, Fraction, glib};
 use gst::{LibraryError, LoggableError};
 use gst::{Structure, prelude::*};
 use gst_base::prelude::BaseSrcExt;
@@ -184,6 +184,12 @@ impl ObjectImpl for WaylandDisplaySrc {
                     .blurb("DRM Render Node to use (e.g. /dev/dri/renderD128")
                     .construct()
                     .build(),
+                glib::ParamSpecInt::builder("cuda-device-id")
+                    .nick("CUDA Device ID")
+                    .blurb("CUDA Device ID to use")
+                    .construct()
+                    .default_value(-1)
+                    .build(),
                 glib::ParamSpecString::builder("mouse")
                     .nick("Input Device")
                     .blurb("Input device to use (e.g. /dev/input/event0")
@@ -214,20 +220,24 @@ impl ObjectImpl for WaylandDisplaySrc {
                 settings.render_node = value
                     .get::<Option<String>>()
                     .expect("Type checked upstream");
-
+            }
+            "cuda-device-id" => {
                 let cuda_context = match cuda::init_cuda() {
                     Ok(_) => {
-                        // TODO: cuda_device_id from the render node
-                        //       this might be helpful: https://github.com/elFarto/nvidia-vaapi-driver/blob/3d46e26818a9e0eff26a7cd0db581316029d953b/src/export-buf.c#L121-L201
-                        match CUDAContext::new(0) {
-                            Ok(ctx) => Some(ctx),
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Failed to create CUDA context with device ID 0: {}",
-                                    e
-                                );
-                                None
+                        let device_id = value.get().unwrap();
+                        if device_id != -1 {
+                            match CUDAContext::new(device_id) {
+                                Ok(ctx) => Some(ctx),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Failed to create CUDA context with device ID 0: {}",
+                                        e
+                                    );
+                                    None
+                                }
                             }
+                        } else {
+                            None
                         }
                     }
                     Err(e) => {
@@ -235,7 +245,7 @@ impl ObjectImpl for WaylandDisplaySrc {
                         None
                     }
                 };
-
+                let mut settings = self.settings.lock().unwrap();
                 settings.cuda_context = cuda_context;
             }
             "mouse" => {
@@ -274,6 +284,13 @@ impl ObjectImpl for WaylandDisplaySrc {
                     .clone()
                     .unwrap_or_else(|| String::from("/dev/dri/renderD128"))
                     .to_value()
+            }
+            "cuda-device-id" => {
+                let settings = self.settings.lock().unwrap();
+                match settings.cuda_context {
+                    Some(ref _cuda_context) => "Set".into(),
+                    None => "None".into(),
+                }
             }
             "mouse" => {
                 let settings = self.settings.lock().unwrap();
@@ -387,6 +404,27 @@ impl ElementImpl for WaylandDisplaySrc {
             x => x,
         }
     }
+
+    fn set_context(&self, context: &Context) {
+        let elem = self.obj().upcast_ref::<gst::Element>().to_owned();
+        let cuda_context = {
+            let settings = self.settings.lock().unwrap();
+            settings.cuda_context.clone()
+        };
+        if cuda_context.is_none() {
+            match CUDAContext::new_from_set_context(&elem, &context, -1) {
+                Ok(ctx) => {
+                    let mut settings = self.settings.lock().unwrap();
+                    settings.cuda_context = Some(ctx);
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to create CUDA context: {}", e);
+                }
+            }
+        } else {
+            tracing::info!("Got set_context() on a WaylandDisplaySrc with CUDA context");
+        }
+    }
 }
 
 impl BaseSrcImpl for WaylandDisplaySrc {
@@ -417,20 +455,15 @@ impl BaseSrcImpl for WaylandDisplaySrc {
             .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
             .build();
 
-        {
-            let settings = self.settings.lock().unwrap();
-            if settings.cuda_context.is_some() {
-                let cuda_caps = gst_video::VideoCapsBuilder::new()
-                    .features([cuda::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
-                    .format_list([VideoFormat::Bgra, VideoFormat::Rgba])
-                    .height_range(..i32::MAX)
-                    .width_range(..i32::MAX)
-                    .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
-                    .build();
+        let cuda_caps = gst_video::VideoCapsBuilder::new()
+            .features([cuda::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
+            .format_list([VideoFormat::Bgra, VideoFormat::Rgba])
+            .height_range(..i32::MAX)
+            .width_range(..i32::MAX)
+            .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
+            .build();
 
-                caps.merge(cuda_caps);
-            }
-        }
+        caps.merge(cuda_caps);
 
         let state = self.state.lock().unwrap();
         let gst_dma_formats: Vec<String> = match state.as_ref() {
@@ -620,14 +653,21 @@ impl BaseSrcImpl for WaylandDisplaySrc {
             return Ok(());
         }
 
-        let settings = self.settings.lock().unwrap();
+        let (render_node, input_devices, cuda_context) = {
+            let settings = self.settings.lock().unwrap();
+            (
+                settings.render_node.clone(),
+                settings.input_devices.clone(),
+                settings.cuda_context.clone(),
+            )
+        };
         let elem = self.obj().upcast_ref::<gst::Element>().to_owned();
         let subscriber = Registry::default().with(GstLayer);
 
         let Ok(mut display) = tracing::subscriber::with_default(subscriber, || {
             let mut command_rx = self.command_rx.lock().unwrap();
             WaylandDisplay::new_with_channel(
-                settings.render_node.clone(),
+                render_node.clone(),
                 self.command_tx.clone(),
                 command_rx.deref_mut().take().unwrap(),
             )
@@ -636,15 +676,41 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                 LibraryError::Failed,
                 (
                     "Failed to open drm node {}, if you want to utilize software rendering set `render-node=software`.",
-                    settings
-                        .render_node
-                        .as_deref()
-                        .unwrap_or("/dev/dri/renderD128")
+                    render_node.unwrap_or("".into())
                 )
             ));
         };
 
-        for path in &settings.input_devices {
+        match display.get_render_device() {
+            Some(render_device) => {
+                if *render_device.pci_vendor() == PCIVendor::NVIDIA && cuda_context.is_none() {
+                    tracing::info!(
+                        "Acquiring a CudaContext from the pipeline, you can manually set the `cuda-device-id` property to override this behavior"
+                    );
+                    match CUDAContext::new_from_gstreamer(&elem, -1) {
+                        Ok(cuda_context) => {
+                            // TODO: we'll get a new cuda context here, because we aren't sharing
+                            //       the GstCudaContext raw pointer between here and set_context
+                            //       we can happily discard this new one, as long as
+                            //       settings.cuda_context is some
+                            let mut settings = self.settings.lock().unwrap();
+                            if settings.cuda_context.is_none() {
+                                tracing::info!("Acquired a CudaContext via new_from_gstreamer");
+                                settings.cuda_context = Some(cuda_context);
+                            } else {
+                                tracing::info!("Acquired a CudaContext via set_context");
+                            }
+                        }
+                        Err(err) => {
+                            gst::warning!(CAT, "Failed to acquire a CudaContext: {}", err);
+                        }
+                    }
+                }
+            }
+            None => {}
+        }
+
+        for path in input_devices {
             display.add_input_device(path);
         }
 

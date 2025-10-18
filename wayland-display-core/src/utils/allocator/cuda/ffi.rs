@@ -4,7 +4,7 @@
 
 use crate::utils::allocator::cuda::CUDAContext;
 use gst::ffi as gst_ffi;
-use gst::ffi::{GstElement, GstQuery};
+use gst::ffi::{GstContext, GstElement, GstQuery};
 use gst::glib::ffi as glib_ffi;
 use gst_video::VideoInfoDmaDrm;
 use gst_video::glib::translate::ToGlibPtr;
@@ -189,10 +189,22 @@ unsafe extern "C" {
     pub(crate) fn gst_cuda_load_library() -> glib_ffi::gboolean;
 
     // GstCudaContext functions
-    pub(crate) fn gst_cuda_context_new(device_id: c_uint) -> *mut GstCudaContext;
+    pub(crate) fn gst_cuda_context_new(device_id: c_int) -> *mut GstCudaContext;
     fn gst_cuda_context_get_handle(context: *mut GstCudaContext) -> CUcontext;
     fn gst_cuda_context_push(context: *mut GstCudaContext) -> glib_ffi::gboolean;
     fn gst_cuda_context_pop(pctx: *mut CUcontext) -> glib_ffi::gboolean;
+    pub(crate) fn gst_cuda_ensure_element_context(
+        element: *mut GstElement,
+        device_id: c_int,
+        cuda_ctx: *mut *mut GstCudaContext,
+    ) -> glib_ffi::gboolean;
+
+    pub(crate) fn gst_cuda_handle_set_context(
+        element: *mut GstElement,
+        context: *mut GstContext,
+        device_id: c_int,
+        cuda_ctx: *mut *mut GstCudaContext,
+    ) -> glib_ffi::gboolean;
 
     // GstCudaStream functions
     pub(crate) fn gst_cuda_stream_new(context: *mut GstCudaContext) -> GstCudaStreamHandle;

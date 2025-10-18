@@ -4,13 +4,14 @@ use ffi::{GstCudaContext, PFN_eglDestroyImageKHR, eglGetProcAddress};
 use gst::glib::ffi as glib_ffi;
 use gst::glib::translate::ToGlibPtr;
 use gst::query::Allocation;
-use gst::{Buffer as GstBuffer, Element, QueryRef};
+use gst::{Buffer as GstBuffer, Context, Element, QueryRef};
 use gst_video::{VideoFormat, VideoInfoDmaDrm, VideoMeta};
 use smithay::backend::allocator::Buffer;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::egl::ffi::egl::types::{EGLDisplay, EGLImageKHR, EGLint};
+use std::ffi::c_int;
 use std::os::fd::AsRawFd;
-use std::os::raw::{c_char, c_uint};
+use std::os::raw::c_char;
 use std::ptr;
 use std::sync::Arc;
 
@@ -382,7 +383,7 @@ unsafe impl Send for StreamHandle {}
 unsafe impl Sync for StreamHandle {}
 
 impl CUDAContext {
-    pub fn new(device_id: c_uint) -> Result<Self, String> {
+    pub fn new(device_id: c_int) -> Result<Self, String> {
         let ptr = unsafe { ffi::gst_cuda_context_new(device_id) };
         if ptr.is_null() {
             return Err("Failed to create CUDA context".into());
@@ -399,6 +400,61 @@ impl CUDAContext {
                 Some(StreamHandle { stream })
             },
         })
+    }
+
+    pub fn new_from_gstreamer(element: &Element, default_device_id: c_int) -> Result<Self, String> {
+        let mut cuda_ctx: *mut GstCudaContext = unsafe { std::mem::zeroed() };
+
+        let result = unsafe {
+            ffi::gst_cuda_ensure_element_context(
+                element.to_glib_none().0,
+                default_device_id,
+                &mut cuda_ctx,
+            )
+        };
+        if result == glib_ffi::GFALSE {
+            Err("Failed to create CUDA context".into())
+        } else {
+            let stream = unsafe { ffi::gst_cuda_stream_new(cuda_ctx) };
+            Ok(CUDAContext {
+                ptr: cuda_ctx,
+                stream: if stream.is_null() {
+                    None
+                } else {
+                    Some(StreamHandle { stream })
+                },
+            })
+        }
+    }
+
+    pub fn new_from_set_context(
+        element: &Element,
+        context: &Context,
+        default_device_id: c_int,
+    ) -> Result<Self, String> {
+        let mut cuda_ctx: *mut GstCudaContext = unsafe { std::mem::zeroed() };
+
+        let result = unsafe {
+            ffi::gst_cuda_handle_set_context(
+                element.to_glib_none().0,
+                context.to_glib_none().0,
+                default_device_id,
+                &mut cuda_ctx,
+            )
+        };
+        if result == glib_ffi::GFALSE {
+            Err("Failed to create CUDA context".into())
+        } else {
+            let stream = unsafe { ffi::gst_cuda_stream_new(cuda_ctx) };
+            Ok(CUDAContext {
+                ptr: cuda_ctx,
+                stream: if stream.is_null() {
+                    None
+                } else {
+                    Some(StreamHandle { stream })
+                },
+            })
+        }
     }
 
     pub fn as_ptr(&self) -> *mut GstCudaContext {
