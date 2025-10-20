@@ -87,16 +87,13 @@ impl State {
             .output_buffer
             .clone()
             .unwrap()
-            .to_gs_buffer(&mut target, &mut self.renderer){
-            Ok(buffer) => {
-                Ok((buffer, render_output_result))
-            },
+            .to_gs_buffer(&mut target, &mut self.renderer)
+        {
+            Ok(buffer) => Ok((buffer, render_output_result)),
             Err(e) => {
                 tracing::warn!("Failed to convert buffer to gst buffer: {:?}", e);
                 Err(OutputDamageTrackerError::Rendering(GlesError::MappingError))
             }
         }
-
-
     }
 }
