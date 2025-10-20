@@ -215,7 +215,11 @@ pub enum VideoInfoTypes {
 pub trait GsBuffer<R: Renderer> {
     fn bind(&mut self, renderer: &mut R) -> Result<GlesTarget, R::Error>;
 
-    fn to_gs_buffer(&self, target: &mut GlesTarget, renderer: &mut R) -> gst::Buffer;
+    fn to_gs_buffer(
+        &self,
+        target: &mut GlesTarget,
+        renderer: &mut R,
+    ) -> Result<GstBuffer, Box<dyn std::error::Error>>;
 
     // Returns the underlying VideoInfo or VideoInfoDmaDrm
     fn get_video_info(&self) -> VideoInfoTypes;
@@ -230,25 +234,25 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
         }
     }
 
-    fn to_gs_buffer(&self, target: &mut GlesTarget, renderer: &mut GlesRenderer) -> GstBuffer {
+    fn to_gs_buffer(
+        &self,
+        target: &mut GlesTarget,
+        renderer: &mut GlesRenderer,
+    ) -> Result<GstBuffer, Box<dyn std::error::Error>> {
         match self {
             GsBufferType::RAW(buffer) => {
-                let mapping = renderer
-                    .copy_framebuffer(
-                        target,
-                        Rectangle::from_size(
-                            (
-                                buffer.video_info.width() as i32,
-                                buffer.video_info.height() as i32,
-                            )
-                                .into(),
-                        ),
-                        buffer.format,
-                    )
-                    .expect("Failed to export framebuffer");
-                let map = renderer
-                    .map_texture(&mapping)
-                    .expect("Failed to download framebuffer");
+                let mapping = renderer.copy_framebuffer(
+                    target,
+                    Rectangle::from_size(
+                        (
+                            buffer.video_info.width() as i32,
+                            buffer.video_info.height() as i32,
+                        )
+                            .into(),
+                    ),
+                    buffer.format,
+                )?;
+                let map = renderer.map_texture(&mapping)?;
 
                 let mut gst_buffer =
                     gst::Buffer::with_size(map.len()).expect("failed to create buffer");
@@ -264,7 +268,7 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
                     plane_data.clone_from_slice(map);
                 }
 
-                gst_buffer
+                Ok(gst_buffer)
             }
             GsBufferType::DMA(buffer) => {
                 let mut gst_buffer = GstBuffer::new();
@@ -288,8 +292,7 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
                         buffer.video_info.width(),
                         buffer.video_info.height(),
                     )
-                    .build()
-                    .unwrap()
+                    .build()?
                     .size();
 
                     let gst_buffer = gst_buffer.get_mut().unwrap();
@@ -335,16 +338,13 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
                         tracing::warn!("Failed to add video meta: {:?}", error);
                     }
                 }
-                gst_buffer
+                Ok(gst_buffer)
             }
-            GsBufferType::CUDA(buffer) => buffer
-                .cuda_image
-                .to_gst_buffer(
-                    buffer.video_info.clone(),
-                    &buffer.cuda_context,
-                    &buffer.buffer_pool,
-                )
-                .expect("Failed to create Gstreamer buffer from CUDA image"),
+            GsBufferType::CUDA(buffer) => Ok(buffer.cuda_image.to_gst_buffer(
+                buffer.video_info.clone(),
+                &buffer.cuda_context,
+                &buffer.buffer_pool,
+            )?),
         }
     }
 
@@ -482,7 +482,9 @@ mod tests {
         assert!(bind_result.is_ok());
 
         render_into(&mut renderer, &mut raw_buffer.unwrap().buffer, 10, 10);
-        let gst_buffer = buffer_clone.to_gs_buffer(&mut bind_result.unwrap(), &mut renderer);
+        let gst_buffer = buffer_clone
+            .to_gs_buffer(&mut bind_result.unwrap(), &mut renderer)
+            .expect("Failed to convert buffer");
         assert!(gst_buffer.is_writable());
         assert_eq!(gst_buffer.size(), video_info.size());
 
@@ -550,7 +552,9 @@ mod tests {
         assert!(bind_result.is_ok());
 
         render_into(&mut renderer, &mut raw_buffer.unwrap().buffer, 10, 10);
-        let gst_buffer = buffer_clone.to_gs_buffer(&mut bind_result.unwrap(), &mut renderer);
+        let gst_buffer = buffer_clone
+            .to_gs_buffer(&mut bind_result.unwrap(), &mut renderer)
+            .expect("Failed to convert buffer");
         let gst_buffer_size = gst_buffer.size();
         assert!(gst_buffer_size >= 4096); // There might be padding but it should at least contain our data
 
@@ -651,7 +655,9 @@ mod tests {
         assert!(bind_result.is_ok());
 
         render_into(&mut renderer, &mut raw_buffer.unwrap().buffer, 10, 10);
-        let gst_buffer = buffer_clone.to_gs_buffer(&mut bind_result.unwrap(), &mut renderer);
+        let gst_buffer = buffer_clone
+            .to_gs_buffer(&mut bind_result.unwrap(), &mut renderer)
+            .expect("Failed to convert buffer");
 
         let gst_buffer_size = gst_buffer.size();
         assert!(gst_buffer_size >= 4096); // There might be padding, but it should at least contain our data

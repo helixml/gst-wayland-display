@@ -83,12 +83,20 @@ impl State {
             [0.0, 0.0, 0.0, 1.0],
         )?;
 
-        let buffer = self
+        match self
             .output_buffer
             .clone()
             .unwrap()
-            .to_gs_buffer(&mut target, &mut self.renderer);
+            .to_gs_buffer(&mut target, &mut self.renderer){
+            Ok(buffer) => {
+                Ok((buffer, render_output_result))
+            },
+            Err(e) => {
+                tracing::warn!("Failed to convert buffer to gst buffer: {:?}", e);
+                Err(OutputDamageTrackerError::Rendering(GlesError::MappingError))
+            }
+        }
 
-        Ok((buffer, render_output_result))
+
     }
 }
