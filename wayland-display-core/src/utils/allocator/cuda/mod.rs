@@ -1,5 +1,4 @@
-use crate::cuda_call;
-use ffi::{CUDA_SUCCESS, CUgraphicsResource, cuda_result_to_string};
+use ffi::CUgraphicsResource;
 use ffi::{GstCudaContext, PFN_eglDestroyImageKHR, eglGetProcAddress};
 use gst::glib::ffi as glib_ffi;
 use gst::glib::translate::ToGlibPtr;
@@ -155,13 +154,16 @@ pub const CAPS_FEATURE_MEMORY_CUDA_MEMORY: &str = "memory:CUDAMemory"; // TODO: 
 pub fn init_cuda() -> Result<(), String> {
     static mut INITIALIZED: bool = false;
     if !unsafe { INITIALIZED } {
-        cuda_call!(ffi::cuInit(0))?;
         unsafe {
-            ffi::gst_cuda_load_library();
+            if ffi::gst_cuda_load_library() == glib_ffi::GFALSE {
+                return Err("Failed to load CUDA library".into());
+            }
             ffi::gst_cuda_memory_init_once();
+            ffi::init_cuda_egl()?;
+
             INITIALIZED = true;
+            Ok(())
         }
-        Ok(())
     } else {
         Ok(())
     }
@@ -474,14 +476,16 @@ pub struct CUDAImage {
 impl CUDAImage {
     pub fn from(egl_image: &EGLImage, cuda_context: &CUDAContext) -> Result<Self, String> {
         let _cuda_context_guard = ffi::CudaContextGuard::new(cuda_context)?;
-
+        let cuda_egl_fn = ffi::get_cuda_egl_functions()?;
         // Let's import the EGLImage into CUDA
         let mut cuda_resource: CUgraphicsResource = ptr::null_mut();
-        cuda_call!(ffi::cuGraphicsEGLRegisterImage(
-            &mut cuda_resource,
-            egl_image.image,
-            0, // flags (0 = read/write)
-        ))?;
+        unsafe {
+            cuda_egl_fn.register_egl_image(
+                &mut cuda_resource,
+                egl_image.image,
+                0, // flags (0 = read/write)
+            )?;
+        }
         Ok(CUDAImage {
             cuda_graphic_resource: cuda_resource,
         })
@@ -494,14 +498,10 @@ impl CUDAImage {
         buffer_pool: &Option<CUDABufferPool>,
     ) -> Result<GstBuffer, Box<dyn std::error::Error>> {
         let _cuda_context_guard = ffi::CudaContextGuard::new(cuda_context)?;
+        let cuda_egl_fn = ffi::get_cuda_egl_functions()?;
 
-        let mut egl_frame = unsafe { std::mem::zeroed() };
-        cuda_call!(ffi::cuGraphicsResourceGetMappedEglFrame(
-            &mut egl_frame,
-            self.cuda_graphic_resource,
-            0,
-            0
-        ))?;
+        let egl_frame =
+            unsafe { cuda_egl_fn.get_mapped_egl_frame(self.cuda_graphic_resource, 0, 0)? };
 
         // Acquire buffer from pool or allocate directly
         let mut buffer = ffi::acquire_or_alloc_buffer(
@@ -541,8 +541,11 @@ impl CUDAImage {
 
 impl Drop for CUDAImage {
     fn drop(&mut self) {
+        let cuda_egl_fn = ffi::get_cuda_egl_functions().expect("Failed to get CUDA EGL functions");
         unsafe {
-            ffi::cuGraphicsUnregisterResource(self.cuda_graphic_resource);
+            cuda_egl_fn
+                .unregister_resource(self.cuda_graphic_resource)
+                .expect("Failed to unregister resource");
         }
     }
 }

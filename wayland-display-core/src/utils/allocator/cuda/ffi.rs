@@ -8,10 +8,12 @@ use gst::ffi::{GstContext, GstElement, GstQuery};
 use gst::glib::ffi as glib_ffi;
 use gst_video::VideoInfoDmaDrm;
 use gst_video::glib::translate::ToGlibPtr;
+use libloading::{Library, Symbol};
 use smithay::backend::egl::ffi::egl::types::{EGLDisplay, EGLImageKHR, EGLint};
 use std::ffi::c_void;
 use std::os::raw::{c_char, c_int, c_uint};
 use std::ptr;
+use std::sync::{Arc, OnceLock};
 
 pub(crate) type GstCudaContext = *mut c_void;
 
@@ -55,7 +57,6 @@ pub(crate) union CUeglFrameUnion {
 const MAX_PLANES: usize = 3;
 
 // CUDA driver API types
-type CUdevice = c_int;
 type CUcontext = *mut c_void;
 type CUstream = *mut c_void;
 type CUdeviceptr = u64;
@@ -84,38 +85,129 @@ pub(crate) const EGL_HEIGHT: EGLint = 0x3056;
 pub(crate) const EGL_LINUX_DRM_FOURCC_EXT: EGLint = 0x3271;
 pub(crate) const EGL_NONE: EGLint = 0x3038;
 
-#[link(name = "cuda")]
 unsafe extern "C" {
     // CUDA Driver API
-    pub(crate) fn cuInit(flags: c_uint) -> CUresult;
-    fn cuDeviceGetCount(count: *mut c_int) -> CUresult;
-    fn cuDeviceGet(device: *mut CUdevice, ordinal: c_int) -> CUresult;
-    fn cuCtxCreate_v2(pctx: *mut CUcontext, flags: c_uint, dev: CUdevice) -> CUresult;
-    fn cuCtxPushCurrent_v2(ctx: CUcontext) -> CUresult;
-    fn cuCtxPopCurrent_v2(pctx: *mut CUcontext) -> CUresult;
-    fn cuCtxDestroy_v2(ctx: CUcontext) -> CUresult;
-
-    fn cuMemAlloc_v2(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult;
-    fn cuMemFree_v2(dptr: CUdeviceptr) -> CUresult;
     fn CuMemcpy2DAsync(pCopy: *const CUDA_MEMCPY2D, stream: CUstream) -> CUresult;
+}
 
-    // CUDA-EGL Interop
-    pub(crate) fn cuGraphicsEGLRegisterImage(
-        pCudaResource: *mut CUgraphicsResource,
+// Add dynamic function pointer types for CUDA-EGL interop
+pub(crate) type CuGraphicsEGLRegisterImageFn = unsafe extern "C" fn(
+    pCudaResource: *mut CUgraphicsResource,
+    image: EGLImageKHR,
+    flags: c_uint,
+) -> CUresult;
+
+pub(crate) type CuGraphicsUnregisterResourceFn =
+    unsafe extern "C" fn(resource: CUgraphicsResource) -> CUresult;
+
+pub(crate) type CuGraphicsResourceGetMappedEglFrameFn = unsafe extern "C" fn(
+    pEglFrame: *mut CUeglFrame,
+    resource: CUgraphicsResource,
+    index: c_uint,
+    mipLevel: c_uint,
+) -> CUresult;
+
+// Structure to hold dynamically loaded EGL interop functions
+pub(crate) struct CudaEglFunctions {
+    // Keep the library handle alive so the symbols remain valid
+    _lib: Arc<Library>,
+    pub register_image: CuGraphicsEGLRegisterImageFn,
+    pub unregister_resource: CuGraphicsUnregisterResourceFn,
+    pub get_mapped_frame: CuGraphicsResourceGetMappedEglFrameFn,
+}
+
+impl CudaEglFunctions {
+    /// Load CUDA-EGL interop functions dynamically from the CUDA library
+    pub fn load() -> Result<Self, String> {
+        unsafe {
+            // Try to open the CUDA library
+            let lib = Library::new("libcuda.so.1")
+                .or_else(|_| Library::new("libcuda.so"))
+                .map_err(|e| format!("Failed to open CUDA library: {}", e))?;
+
+            // Load cuGraphicsEGLRegisterImage
+            let register_image: Symbol<CuGraphicsEGLRegisterImageFn> = lib
+                .get(b"cuGraphicsEGLRegisterImage")
+                .map_err(|e| format!("Failed to load cuGraphicsEGLRegisterImage: {}", e))?;
+            let register_image = *register_image;
+
+            // Load cuGraphicsUnregisterResource
+            let unregister_resource: Symbol<CuGraphicsUnregisterResourceFn> = lib
+                .get(b"cuGraphicsUnregisterResource")
+                .map_err(|e| format!("Failed to load cuGraphicsUnregisterResource: {}", e))?;
+            let unregister_resource = *unregister_resource;
+
+            // Load cuGraphicsResourceGetMappedEglFrame
+            let get_mapped_frame: Symbol<CuGraphicsResourceGetMappedEglFrameFn> = lib
+                .get(b"cuGraphicsResourceGetMappedEglFrame")
+                .map_err(|e| {
+                    format!("Failed to load cuGraphicsResourceGetMappedEglFrame: {}", e)
+                })?;
+            let get_mapped_frame = *get_mapped_frame;
+
+            Ok(CudaEglFunctions {
+                _lib: Arc::new(lib),
+                register_image,
+                unregister_resource,
+                get_mapped_frame,
+            })
+        }
+    }
+
+    /// Convenience method to register an EGL image
+    pub unsafe fn register_egl_image(
+        &self,
+        resource: *mut CUgraphicsResource,
         image: EGLImageKHR,
         flags: c_uint,
-    ) -> CUresult;
+    ) -> Result<(), String> {
+        let result = unsafe { (self.register_image)(resource, image, flags) };
+        if result == CUDA_SUCCESS {
+            Ok(())
+        } else {
+            Err(cuda_result_to_string(result).into())
+        }
+    }
 
-    pub(crate) fn cuGraphicsUnregisterResource(resource: CUgraphicsResource) -> CUresult;
+    /// Convenience method to unregister a resource
+    pub unsafe fn unregister_resource(&self, resource: CUgraphicsResource) -> Result<(), String> {
+        let result = unsafe { (self.unregister_resource)(resource) };
+        if result == CUDA_SUCCESS {
+            Ok(())
+        } else {
+            Err(cuda_result_to_string(result).into())
+        }
+    }
 
-    pub(crate) fn cuGraphicsResourceGetMappedEglFrame(
-        pEglFrame: *mut CUeglFrame,
+    /// Convenience method to get mapped EGL frame
+    pub unsafe fn get_mapped_egl_frame(
+        &self,
         resource: CUgraphicsResource,
         index: c_uint,
-        mipLevel: c_uint,
-    ) -> CUresult;
+        mip_level: c_uint,
+    ) -> Result<CUeglFrame, String> {
+        let mut frame: CUeglFrame = unsafe { std::mem::zeroed() };
+        let result = unsafe { (self.get_mapped_frame)(&mut frame, resource, index, mip_level) };
+        if result == CUDA_SUCCESS {
+            Ok(frame)
+        } else {
+            Err(cuda_result_to_string(result).into())
+        }
+    }
+}
 
-    fn cuStreamSynchronize(stream: CUstream) -> CUresult;
+static CUDA_EGL_FUNCTIONS: OnceLock<CudaEglFunctions> = OnceLock::new();
+
+pub fn init_cuda_egl() -> Result<(), String> {
+    CUDA_EGL_FUNCTIONS
+        .get_or_init(|| CudaEglFunctions::load().expect("Failed to load CUDA-EGL functions"));
+    Ok(())
+}
+
+pub fn get_cuda_egl_functions() -> Result<&'static CudaEglFunctions, String> {
+    CUDA_EGL_FUNCTIONS.get().ok_or_else(|| {
+        "CUDA EGL functions not initialized. Call init_cuda_egl() first.".to_string()
+    })
 }
 
 fn gst_dma_video_info_to_video_info(
@@ -137,7 +229,6 @@ fn gst_dma_video_info_to_video_info(
     Ok(video_info)
 }
 
-#[link(name = "EGL")]
 unsafe extern "C" {
     pub(crate) fn eglGetProcAddress(procname: *const c_char) -> *mut c_void;
 }

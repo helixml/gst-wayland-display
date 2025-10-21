@@ -222,26 +222,20 @@ impl ObjectImpl for WaylandDisplaySrc {
                     .expect("Type checked upstream");
             }
             "cuda-device-id" => {
-                let cuda_context = match cuda::init_cuda() {
-                    Ok(_) => {
-                        let device_id = value.get().unwrap();
-                        if device_id != -1 {
-                            match CUDAContext::new(device_id) {
-                                Ok(ctx) => Some(ctx),
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "Failed to create CUDA context with device ID 0: {}",
-                                        e
-                                    );
-                                    None
-                                }
+                let cuda_context = {
+                    let device_id = value.get().unwrap();
+                    if device_id != -1 {
+                        match CUDAContext::new(device_id) {
+                            Ok(ctx) => Some(ctx),
+                            Err(e) => {
+                                tracing::warn!(
+                                    "Failed to create CUDA context with device ID 0: {}",
+                                    e
+                                );
+                                None
                             }
-                        } else {
-                            None
                         }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to initialize CUDA: {}", e);
+                    } else {
                         None
                     }
                 };

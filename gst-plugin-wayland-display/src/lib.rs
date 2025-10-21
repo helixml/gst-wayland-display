@@ -1,4 +1,5 @@
 use gst::glib;
+use waylanddisplaycore::utils::allocator::cuda;
 
 pub mod utils;
 mod waylandsrc;
@@ -6,6 +7,14 @@ mod waylandsrc;
 fn plugin_init(plugin: &gst::Plugin) -> Result<(), glib::BoolError> {
     waylandsrc::register(plugin)?;
     tracing_subscriber::fmt::try_init().ok();
+    match cuda::init_cuda() {
+        Ok(_) => {
+            tracing::info!("CUDA initialization successful");
+        }
+        Err(e) => {
+            tracing::info!("CUDA initialization failed: {}", e);
+        }
+    }
     Ok(())
 }
 

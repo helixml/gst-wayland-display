@@ -20,6 +20,7 @@ once_cell.workspace = true
 wayland-backend = "0.3.10"
 wayland-scanner = "0.31.6"
 gstreamer-allocators = { version = "0.23.2", package = "gstreamer-allocators", features = ["v1_24", "v1_16"] }
+libloading = "0.8.9"
 
 [build-dependencies]
 pkg-config = "0.3"
