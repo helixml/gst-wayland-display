@@ -74,8 +74,8 @@ pub use self::focus::*;
 pub use self::input::*;
 pub use self::rendering::*;
 use crate::utils::allocator::{
-    GsBuffer, GsBufferType, GsDmaBuf, GsGlesbuffer, VideoInfoTypes, gst_video_format_to_drm_fourcc,
-    gst_video_format_to_drm_modifier, new_gbm_device,
+    GsBuffer, GsBufferType, GsCUDABuf, GsDmaBuf, GsGlesbuffer, VideoInfoTypes,
+    gst_video_format_to_drm_fourcc, gst_video_format_to_drm_modifier, new_gbm_device,
 };
 use crate::utils::device::gpu::GPUDevice;
 use crate::utils::renderer::setup_renderer;
@@ -352,6 +352,23 @@ pub(crate) fn init(
                                     .expect("Failed to create GsDmaBuf");
                                 state.output_buffer = Some(GsBufferType::DMA(allocator));
                             }
+                            GstVideoInfo::CUDA(base_info) => {
+                                let egl_display = state
+                                    .renderer
+                                    .egl_context()
+                                    .display()
+                                    .get_display_handle()
+                                    .handle;
+                                let allocator = GsCUDABuf::new(
+                                    render_node.unwrap(),
+                                    base_info.cuda_context,
+                                    base_info.video_info,
+                                    base_info.buffer_pool,
+                                    &egl_display,
+                                )
+                                .expect("Failed to create GsCUDABuf");
+                                state.output_buffer = Some(GsBufferType::CUDA(allocator));
+                            }
                         },
                         RenderTarget::Software => {
                             let allocator =
@@ -515,6 +532,12 @@ pub(crate) fn init(
                         }
                         None => render(state, Instant::now()),
                     };
+                }
+                Event::Msg(Command::UpdateCUDABufferPool(pool)) => {
+                    tracing::info!("Updating CUDA buffer pool");
+                    if let Some(GsBufferType::CUDA(ref mut cuda_buf)) = state.output_buffer {
+                        cuda_buf.buffer_pool = Some(pool);
+                    }
                 }
                 Event::Msg(Command::Quit) | Event::Closed => {
                     state.should_quit = true;

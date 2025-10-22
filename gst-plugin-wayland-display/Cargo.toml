@@ -14,9 +14,11 @@ crate-type = ["cdylib", "rlib"]
 path = "src/lib.rs"
 
 [features]
+default = ["cuda"]
 static = []
 capi = []
 doc = []
+cuda = []
 
 [dependencies]
 gst.workspace = true
