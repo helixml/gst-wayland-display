@@ -2,6 +2,7 @@ use smithay::backend::SwapBuffersError;
 use smithay::backend::drm::CreateDrmNodeError;
 pub use smithay::reexports::calloop::channel::{Channel, Sender, channel};
 
+#[cfg(feature = "cuda")]
 use crate::utils::allocator::cuda::CUDABufferPool;
 use crate::utils::device::gpu::GPUDevice;
 pub use smithay::backend::allocator::{
@@ -30,6 +31,7 @@ pub enum Command {
         SyncSender<Result<gst::Buffer, SwapBuffersError>>,
         Option<Tracer>,
     ),
+    #[cfg(feature = "cuda")]
     UpdateCUDABufferPool(CUDABufferPool),
     KeyboardInput(u32, KeyState),
     PointerMotion(Point<f64, Logical>),

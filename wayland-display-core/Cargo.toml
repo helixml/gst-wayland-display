@@ -12,6 +12,10 @@ name = "waylanddisplaycore"
 crate-type = ["cdylib", "staticlib", "rlib"]
 path = "src/lib.rs"
 
+[features]
+default = ["cuda"]
+cuda = ["dep:libloading"]
+
 [dependencies]
 gst.workspace = true
 gst-video.workspace = true
@@ -20,7 +24,7 @@ once_cell.workspace = true
 wayland-backend = "0.3.10"
 wayland-scanner = "0.31.6"
 gstreamer-allocators = { version = "0.23.2", package = "gstreamer-allocators", features = ["v1_24", "v1_16"] }
-libloading = "0.8.9"
+libloading = { version = "0.8.9", optional = true }
 
 [build-dependencies]
 pkg-config = "0.3"

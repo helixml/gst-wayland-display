@@ -17,8 +17,13 @@ use gst_base::subclass::prelude::*;
 use once_cell::sync::Lazy;
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::SubscriberExt;
-use waylanddisplaycore::utils::allocator::cuda::{CUDABufferPool, CUDAContext};
-use waylanddisplaycore::utils::allocator::{cuda, gst_video_format_name_to_drm_fourcc};
+#[cfg(feature = "cuda")]
+use waylanddisplaycore::utils::allocator::{
+    cuda,
+    cuda::{CUDABufferPool, CUDAContext},
+    gst_video_format_name_to_drm_fourcc,
+};
+#[cfg(feature = "cuda")]
 use waylanddisplaycore::utils::video_info::CUDAParams;
 use waylanddisplaycore::{
     ButtonState, Channel, Command, DrmFormat, DrmModifier, GstVideoInfo, KeyState, Sender,
@@ -49,7 +54,9 @@ pub struct Settings {
     render_node: Option<String>,
     input_devices: Vec<String>,
     disable_intel_workaround: bool,
+    #[cfg(feature = "cuda")]
     cuda_context: Option<cuda::CUDAContext>,
+    #[cfg(feature = "cuda")]
     cudabuffer_pool: Option<CUDABufferPool>,
 }
 
@@ -184,6 +191,7 @@ impl ObjectImpl for WaylandDisplaySrc {
                     .blurb("DRM Render Node to use (e.g. /dev/dri/renderD128")
                     .construct()
                     .build(),
+                #[cfg(feature = "cuda")]
                 glib::ParamSpecInt::builder("cuda-device-id")
                     .nick("CUDA Device ID")
                     .blurb("CUDA Device ID to use")
@@ -221,6 +229,7 @@ impl ObjectImpl for WaylandDisplaySrc {
                     .get::<Option<String>>()
                     .expect("Type checked upstream");
             }
+            #[cfg(feature = "cuda")]
             "cuda-device-id" => {
                 let cuda_context = {
                     let device_id = value.get().unwrap();
@@ -279,6 +288,7 @@ impl ObjectImpl for WaylandDisplaySrc {
                     .unwrap_or_else(|| String::from("/dev/dri/renderD128"))
                     .to_value()
             }
+            #[cfg(feature = "cuda")]
             "cuda-device-id" => {
                 let settings = self.settings.lock().unwrap();
                 match settings.cuda_context {
@@ -346,14 +356,6 @@ impl ElementImpl for WaylandDisplaySrc {
                 .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
                 .build();
 
-            let cuda_caps = gst_video::VideoCapsBuilder::new()
-                .features([cuda::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
-                .format_list([VideoFormat::Bgra, VideoFormat::Rgba])
-                .height_range(..i32::MAX)
-                .width_range(..i32::MAX)
-                .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
-                .build();
-
             let mut dmabuf_caps = gst_video::VideoCapsBuilder::new()
                 .features([gstreamer_allocators::CAPS_FEATURE_MEMORY_DMABUF])
                 .format(VideoFormat::DmaDrm)
@@ -365,7 +367,18 @@ impl ElementImpl for WaylandDisplaySrc {
                 .build();
 
             dmabuf_caps.merge(caps);
-            dmabuf_caps.merge(cuda_caps);
+
+            #[cfg(feature = "cuda")]
+            {
+                let cuda_caps = gst_video::VideoCapsBuilder::new()
+                    .features([cuda::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
+                    .format_list([VideoFormat::Bgra, VideoFormat::Rgba])
+                    .height_range(..i32::MAX)
+                    .width_range(..i32::MAX)
+                    .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
+                    .build();
+                dmabuf_caps.merge(cuda_caps);
+            }
 
             let src_pad_template = gst::PadTemplate::new(
                 "src",
@@ -399,6 +412,7 @@ impl ElementImpl for WaylandDisplaySrc {
         }
     }
 
+    #[cfg(feature = "cuda")]
     fn set_context(&self, context: &Context) {
         let elem = self.obj().upcast_ref::<gst::Element>().to_owned();
         let cuda_context = {
@@ -422,6 +436,7 @@ impl ElementImpl for WaylandDisplaySrc {
 }
 
 impl BaseSrcImpl for WaylandDisplaySrc {
+    #[cfg(feature = "cuda")]
     fn query(&self, query: &mut gst::QueryRef) -> bool {
         if query.type_() == gst::QueryType::Context {
             let settings = self.settings.lock().unwrap();
@@ -441,6 +456,11 @@ impl BaseSrcImpl for WaylandDisplaySrc {
         }
     }
 
+    #[cfg(not(feature = "cuda"))]
+    fn query(&self, query: &mut gst::QueryRef) -> bool {
+        BaseSrcImplExt::parent_query(self, query)
+    }
+
     fn caps(&self, filter: Option<&gst::Caps>) -> Option<gst::Caps> {
         let mut caps = VideoCapsBuilder::new()
             .format(VideoFormat::Rgbx)
@@ -449,15 +469,18 @@ impl BaseSrcImpl for WaylandDisplaySrc {
             .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
             .build();
 
-        let cuda_caps = gst_video::VideoCapsBuilder::new()
-            .features([cuda::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
-            .format_list([VideoFormat::Bgra, VideoFormat::Rgba])
-            .height_range(..i32::MAX)
-            .width_range(..i32::MAX)
-            .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
-            .build();
+        #[cfg(feature = "cuda")]
+        {
+            let cuda_caps = gst_video::VideoCapsBuilder::new()
+                .features([cuda::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
+                .format_list([VideoFormat::Bgra, VideoFormat::Rgba])
+                .height_range(..i32::MAX)
+                .width_range(..i32::MAX)
+                .framerate_range(Fraction::new(1, 1)..Fraction::new(i32::MAX, 1))
+                .build();
 
-        caps.merge(cuda_caps);
+            caps.merge(cuda_caps);
+        }
 
         let state = self.state.lock().unwrap();
         let gst_dma_formats: Vec<String> = match state.as_ref() {
@@ -532,6 +555,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
         self.parent_event(event)
     }
 
+    #[cfg(feature = "cuda")]
     fn decide_allocation(&self, query: &mut Allocation) -> Result<(), LoggableError> {
         // No caps, no allocation
         let (outcaps, _need_pool) = query.get();
@@ -601,6 +625,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
     fn set_caps(&self, caps: &gst::Caps) -> Result<(), gst::LoggableError> {
         let video_info = match VideoInfoDmaDrm::from_caps(caps) {
             Ok(dma_video_info) => GstVideoInfo::DMA(dma_video_info),
+            #[cfg(feature = "cuda")]
             Err(_) => {
                 let base_video_info =
                     gst_video::VideoInfo::from_caps(caps).expect("failed to get video info");
@@ -634,6 +659,10 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                     GstVideoInfo::RAW(base_video_info)
                 }
             }
+            #[cfg(not(feature = "cuda"))]
+            Err(_) => {
+                GstVideoInfo::RAW(VideoInfo::from_caps(caps).expect("failed to get video info"))
+            }
         };
 
         let _ = self.command_tx.send(Command::VideoInfo(video_info));
@@ -647,6 +676,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
             return Ok(());
         }
 
+        #[cfg(feature = "cuda")]
         let (render_node, input_devices, cuda_context) = {
             let settings = self.settings.lock().unwrap();
             (
@@ -655,6 +685,13 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                 settings.cuda_context.clone(),
             )
         };
+
+        #[cfg(not(feature = "cuda"))]
+        let (render_node, input_devices) = {
+            let settings = self.settings.lock().unwrap();
+            (settings.render_node.clone(), settings.input_devices.clone())
+        };
+
         let elem = self.obj().upcast_ref::<gst::Element>().to_owned();
         let subscriber = Registry::default().with(GstLayer);
 
@@ -675,6 +712,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
             ));
         };
 
+        #[cfg(feature = "cuda")]
         match display.get_render_device() {
             Some(render_device) => {
                 if *render_device.pci_vendor() == PCIVendor::NVIDIA && cuda_context.is_none() {

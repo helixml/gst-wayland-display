@@ -49,17 +49,44 @@ WAYLAND_DISPLAY=wayland-1 weston-simple-egl
 ## Zero copy pipeline support
 
 This plugin supports outputting **DMA buffers** in order to achieve a proper **zero-copy pipeline**.  
-It'll negotiate the proper caps with downstream elements using Gstreamer, you can read more about it [in the official docs](https://gstreamer.freedesktop.org/documentation/additional/design/dmabuf.html?gi-language=c).
+It'll negotiate the proper caps with downstream elements using Gstreamer, you can read more about
+it [in the official docs](https://gstreamer.freedesktop.org/documentation/additional/design/dmabuf.html?gi-language=c).
 
 Example pipelines:
-- Nvidia
-```bash
-gst-launch-1.0 waylanddisplaysrc  ! 'video/x-raw(memory:DMABuf),width=1920,height=1080,framerate=60/1' ! glupload ! glcolorconvert ! 'video/x-raw(memory:GLMemory), format=NV12' ! nvh265enc ! nvh265dec ! autovideosink
-```
+
 - AMD/Intel
+
 ```bash
 gst-launch-1.0 waylanddisplaysrc ! 'video/x-raw(memory:DMABuf),width=1920,height=1080,framerate=60/1' ! vapostproc ! 'video/x-raw(memory:VAMemory), format=NV12' ! vah265enc ! vah265dec ! autovideosink
 ```
+
+- Nvidia (or see below for an even better pipeline that uses CUDAMemory)
+
+```bash
+gst-launch-1.0 waylanddisplaysrc  ! 'video/x-raw(memory:DMABuf),width=1920,height=1080,framerate=60/1' ! glupload ! glcolorconvert ! 'video/x-raw(memory:GLMemory), format=NV12' ! nvh265enc ! nvh265dec ! autovideosink
+```
+
+### Support for Nvidia CUDAMemory
+
+This plugin supports outputting **CUDA buffers** for low-latency Nvidia pipelines. By not using `glupload` and
+`glcolorconvert` we can not only be way more efficient, but it'll also allow us to re-use the GL context that we already
+have in Smithay.
+
+It can negotiate the CUDA Context with other elements in the pipeline, or it can be a source for other elements when
+setting the property`cuda-device-id`. This is particularly useful when running in a multi-GPU environment as it gives
+you full control over which GPU is used.
+
+Example pipeline:
+
+```bash 
+gst-launch-1.0 waylanddisplaysrc cuda-device-id=0 ! 'video/x-raw(memory:CUDAMemory),width=1920,height=1080,framerate=60/1' ! nvh265enc ! nvh265dec ! autovideosink
+```
+
+In order to support this we leverage `gst-cuda-1.0` which adds a single build dependency to this project.
+At runtime, you'll need to have access to `libcuda.so` but only to access and use `CUDAMemory`; you can still use
+`DMABuf` when running this plugin on a platform that doesn't support it.
+
+It's also possible to completely remove this functionality by disabling the Cargo `cuda` feature.
 
 ## C Bindings
 

@@ -1,6 +1,8 @@
+#[cfg(feature = "cuda")]
 pub mod cuda;
 
 use crate::DrmModifier;
+#[cfg(feature = "cuda")]
 use crate::utils::allocator::cuda::{
     CUDABufferPool, CUDAContext, CUDAImage, EGLImage, EglExtensions,
 };
@@ -127,6 +129,7 @@ impl GsDmaBuf {
     }
 }
 
+#[cfg(feature = "cuda")]
 #[derive(Debug, Clone)]
 pub struct GsCUDABuf {
     buffer: Dmabuf,
@@ -142,6 +145,7 @@ pub struct GsCUDABuf {
     cuda_image: Arc<CUDAImage>,
 }
 
+#[cfg(feature = "cuda")]
 impl GsCUDABuf {
     pub fn new(
         render_node: DrmNode,
@@ -204,6 +208,7 @@ impl GsCUDABuf {
 pub enum GsBufferType {
     RAW(GsGlesbuffer),
     DMA(GsDmaBuf),
+    #[cfg(feature = "cuda")]
     CUDA(GsCUDABuf),
 }
 
@@ -230,6 +235,7 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
         match self {
             GsBufferType::RAW(buffer) => renderer.bind(&mut buffer.buffer),
             GsBufferType::DMA(buffer) => renderer.bind(&mut buffer.buffer),
+            #[cfg(feature = "cuda")]
             GsBufferType::CUDA(buffer) => renderer.bind(&mut buffer.buffer),
         }
     }
@@ -340,6 +346,7 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
                 }
                 Ok(gst_buffer)
             }
+            #[cfg(feature = "cuda")]
             GsBufferType::CUDA(buffer) => Ok(buffer.cuda_image.to_gst_buffer(
                 buffer.video_info.clone(),
                 &buffer.cuda_context,
@@ -352,6 +359,7 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
         match self {
             GsBufferType::RAW(buffer) => VideoInfoTypes::VideoInfo(buffer.video_info.clone()),
             GsBufferType::DMA(buffer) => VideoInfoTypes::VideoInfoDmaDrm(buffer.video_info.clone()),
+            #[cfg(feature = "cuda")]
             GsBufferType::CUDA(buffer) => {
                 VideoInfoTypes::VideoInfoDmaDrm(buffer.video_info.clone())
             }
@@ -582,6 +590,7 @@ mod tests {
         assert_eq!(buf_meta.n_planes(), 1);
     }
 
+    #[cfg(feature = "cuda")]
     #[test]
     fn test_cuda_buffer() {
         test_init();
