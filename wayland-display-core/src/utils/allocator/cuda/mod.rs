@@ -1,5 +1,5 @@
 use ffi::CUgraphicsResource;
-use ffi::{GstCudaContext, PFN_eglDestroyImageKHR, eglGetProcAddress};
+use ffi::{GstCudaContext, PFN_eglDestroyImageKHR};
 use gst::glib::ffi as glib_ffi;
 use gst::glib::translate::ToGlibPtr;
 use gst::query::Allocation;
@@ -7,6 +7,7 @@ use gst::{Buffer as GstBuffer, Context, Element, QueryRef};
 use gst_video::{VideoFormat, VideoInfoDmaDrm, VideoMeta};
 use smithay::backend::allocator::Buffer;
 use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::egl;
 use smithay::backend::egl::ffi::egl::types::{EGLDisplay, EGLImageKHR, EGLint};
 use std::ffi::c_int;
 use std::os::fd::AsRawFd;
@@ -25,13 +26,8 @@ pub struct EglExtensions {
 
 impl EglExtensions {
     unsafe fn load() -> Option<Self> {
-        let create_image_name = b"eglCreateImageKHR\0";
-        let destroy_image_name = b"eglDestroyImageKHR\0";
-
-        let create_image_ptr =
-            unsafe { eglGetProcAddress(create_image_name.as_ptr() as *const c_char) };
-        let destroy_image_ptr =
-            unsafe { eglGetProcAddress(destroy_image_name.as_ptr() as *const c_char) };
+        let create_image_ptr = unsafe { egl::get_proc_address("eglCreateImageKHR") };
+        let destroy_image_ptr = unsafe { egl::get_proc_address("eglDestroyImageKHR") };
 
         if create_image_ptr.is_null() || destroy_image_ptr.is_null() {
             return None;

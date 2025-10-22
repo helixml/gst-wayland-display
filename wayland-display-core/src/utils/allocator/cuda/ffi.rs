@@ -11,7 +11,7 @@ use gst_video::glib::translate::ToGlibPtr;
 use libloading::{Library, Symbol};
 use smithay::backend::egl::ffi::egl::types::{EGLDisplay, EGLImageKHR, EGLint};
 use std::ffi::c_void;
-use std::os::raw::{c_char, c_int, c_uint};
+use std::os::raw::{c_int, c_uint};
 use std::ptr;
 use std::sync::{Arc, OnceLock};
 
@@ -227,10 +227,6 @@ fn gst_dma_video_info_to_video_info(
     }
 
     Ok(video_info)
-}
-
-unsafe extern "C" {
-    pub(crate) fn eglGetProcAddress(procname: *const c_char) -> *mut c_void;
 }
 
 // EGLImage extension function pointers
