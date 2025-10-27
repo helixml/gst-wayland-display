@@ -7,6 +7,7 @@ use gst::ffi as gst_ffi;
 use gst::ffi::{GstContext, GstElement, GstQuery};
 use gst::glib::ffi as glib_ffi;
 use gst_video::VideoInfoDmaDrm;
+use gst_video::glib::gobject_ffi;
 use gst_video::glib::translate::ToGlibPtr;
 use libloading::{Library, Symbol};
 use smithay::backend::egl::ffi::egl::types::{EGLDisplay, EGLImageKHR, EGLint};
@@ -321,6 +322,7 @@ unsafe extern "C" {
     pub(crate) fn gst_cuda_memory_init_once() -> c_void;
 
     pub(crate) fn gst_cuda_buffer_pool_new(context: *mut GstCudaContext) -> GstBufferPool;
+    pub(crate) fn gst_cuda_buffer_pool_get_type() -> glib_ffi::GType;
     pub(crate) fn gst_buffer_pool_config_set_cuda_stream(
         config: *mut gst_ffi::GstStructure,
         stream: GstCudaStreamHandle,
@@ -358,6 +360,15 @@ impl Drop for CudaContextGuard {
 
 pub(crate) const GST_BUFFER_POOL_OPTION_VIDEO_META: &[u8] = b"GstBufferPoolOptionVideoMeta\0";
 const GST_MAP_CUDA: u32 = gst_ffi::GST_MAP_FLAG_LAST << 1;
+
+pub(crate) fn gst_is_cuda_buffer_pool(obj: *mut gst::ffi::GstBufferPool) -> bool {
+    unsafe {
+        gobject_ffi::g_type_check_instance_is_a(
+            obj as *mut gobject_ffi::GTypeInstance,
+            gst_cuda_buffer_pool_get_type(),
+        ) != 0
+    }
+}
 
 pub(crate) fn acquire_or_alloc_buffer(
     buffer_pool: Option<GstBufferPool>,

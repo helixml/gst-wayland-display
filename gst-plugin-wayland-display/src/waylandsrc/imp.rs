@@ -419,19 +419,16 @@ impl ElementImpl for WaylandDisplaySrc {
             let settings = self.settings.lock().unwrap();
             settings.cuda_context.clone()
         };
-        if cuda_context.is_none() {
-            match CUDAContext::new_from_set_context(&elem, &context, -1) {
-                Ok(ctx) => {
-                    let mut settings = self.settings.lock().unwrap();
-                    settings.cuda_context = Some(ctx);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to create CUDA context: {}", e);
-                }
+        match CUDAContext::new_from_set_context(&elem, &context, -1, cuda_context) {
+            Ok(ctx) => {
+                let mut settings = self.settings.lock().unwrap();
+                settings.cuda_context = Some(ctx);
             }
-        } else {
-            tracing::info!("Got set_context() on a WaylandDisplaySrc with CUDA context");
+            Err(e) => {
+                tracing::warn!("Failed to create CUDA context: {}", e);
+            }
         }
+        self.parent_set_context(context)
     }
 }
 
@@ -584,11 +581,26 @@ impl BaseSrcImpl for WaylandDisplaySrc {
             let size = video_info.size() as u32;
             (CUDABufferPool::new(&cuda_ctx), false, size, 0, 0)
         } else {
-            tracing::info!("Using existing allocation pools");
-            let (_pool, size, min, max) = pools.get(0).unwrap();
-            // TODO: check if GST_IS_CUDA_BUFFER_POOL(pool)
-            // TODO: wrap the pool in our buffer
-            (CUDABufferPool::new(&cuda_ctx), true, *size, *min, *max)
+            tracing::info!("Found existing allocation pools");
+            let (pool, size, min, max) = pools.get(0).unwrap();
+            let wrapped_pool = match pool {
+                Some(pool) => match CUDABufferPool::from(pool.as_ptr()) {
+                    Ok(pool) => Ok(pool),
+                    Err(err) => {
+                        tracing::info!(
+                            "Failed to get CUDA buffer pool from allocation pool: {}",
+                            err
+                        );
+                        unsafe { gst::ffi::gst_clear_object(pool.as_ptr() as *mut _) };
+                        CUDABufferPool::new(&cuda_ctx)
+                    }
+                },
+                None => {
+                    tracing::info!("Failed to get CUDA buffer pool from allocation pool");
+                    CUDABufferPool::new(&cuda_ctx)
+                }
+            };
+            (wrapped_pool, true, *size, *min, *max)
         };
 
         match pool {
@@ -719,12 +731,12 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                     tracing::info!(
                         "Acquiring a CudaContext from the pipeline, you can manually set the `cuda-device-id` property to override this behavior"
                     );
-                    match CUDAContext::new_from_gstreamer(&elem, -1) {
+                    let cuda_context = {
+                        let settings = self.settings.lock().unwrap();
+                        settings.cuda_context.clone()
+                    };
+                    match CUDAContext::new_from_gstreamer(&elem, -1, cuda_context) {
                         Ok(cuda_context) => {
-                            // TODO: we'll get a new cuda context here, because we aren't sharing
-                            //       the GstCudaContext raw pointer between here and set_context
-                            //       we can happily discard this new one, as long as
-                            //       settings.cuda_context is some
                             let mut settings = self.settings.lock().unwrap();
                             if settings.cuda_context.is_none() {
                                 tracing::info!("Acquired a CudaContext via new_from_gstreamer");

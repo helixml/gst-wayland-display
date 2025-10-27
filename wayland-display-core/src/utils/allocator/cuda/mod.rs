@@ -230,6 +230,17 @@ impl CUDABufferPool {
         }
     }
 
+    pub fn from(pool: *mut gst::ffi::GstBufferPool) -> Result<Self, String> {
+        if ffi::gst_is_cuda_buffer_pool(pool) {
+            unsafe { gst::ffi::gst_object_ref(pool as *mut gst::ffi::GstObject) };
+            Ok(CUDABufferPool {
+                pool: pool as ffi::GstBufferPool,
+            })
+        } else {
+            Err("Input buffer pool isn't a CUDABufferPool".into())
+        }
+    }
+
     pub fn configure(
         &self,
         caps: &gst::Caps,
@@ -400,8 +411,15 @@ impl CUDAContext {
         })
     }
 
-    pub fn new_from_gstreamer(element: &Element, default_device_id: c_int) -> Result<Self, String> {
-        let mut cuda_ctx: *mut GstCudaContext = unsafe { std::mem::zeroed() };
+    pub fn new_from_gstreamer(
+        element: &Element,
+        default_device_id: c_int,
+        cuda_context: Option<CUDAContext>,
+    ) -> Result<Self, String> {
+        let mut cuda_ctx: *mut GstCudaContext = match cuda_context {
+            Some(c) => c.ptr,
+            None => unsafe { std::mem::zeroed() },
+        };
 
         let result = unsafe {
             ffi::gst_cuda_ensure_element_context(
@@ -414,6 +432,7 @@ impl CUDAContext {
             Err("Failed to create CUDA context".into())
         } else {
             let stream = unsafe { ffi::gst_cuda_stream_new(cuda_ctx) };
+            unsafe { gst::ffi::gst_object_ref(cuda_ctx as *mut gst::ffi::GstObject) };
             Ok(CUDAContext {
                 ptr: cuda_ctx,
                 stream: if stream.is_null() {
@@ -429,8 +448,12 @@ impl CUDAContext {
         element: &Element,
         context: &Context,
         default_device_id: c_int,
+        cuda_context: Option<CUDAContext>,
     ) -> Result<Self, String> {
-        let mut cuda_ctx: *mut GstCudaContext = unsafe { std::mem::zeroed() };
+        let mut cuda_ctx: *mut GstCudaContext = match cuda_context {
+            Some(c) => c.ptr,
+            None => unsafe { std::mem::zeroed() },
+        };
 
         let result = unsafe {
             ffi::gst_cuda_handle_set_context(
@@ -444,6 +467,7 @@ impl CUDAContext {
             Err("Failed to create CUDA context".into())
         } else {
             let stream = unsafe { ffi::gst_cuda_stream_new(cuda_ctx) };
+            unsafe { gst::ffi::gst_object_ref(cuda_ctx as *mut gst::ffi::GstObject) };
             Ok(CUDAContext {
                 ptr: cuda_ctx,
                 stream: if stream.is_null() {
