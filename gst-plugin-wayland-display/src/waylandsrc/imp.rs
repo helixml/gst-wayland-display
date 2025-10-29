@@ -422,7 +422,9 @@ impl ElementImpl for WaylandDisplaySrc {
         match CUDAContext::new_from_set_context(&elem, &context, -1, cuda_context) {
             Ok(ctx) => {
                 let mut settings = self.settings.lock().unwrap();
-                settings.cuda_context = Some(ctx);
+                if settings.cuda_context.is_none() {
+                    settings.cuda_context = Some(ctx);
+                }
             }
             Err(e) => {
                 tracing::warn!("Failed to create CUDA context: {}", e);
@@ -735,6 +737,8 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                         let settings = self.settings.lock().unwrap();
                         settings.cuda_context.clone()
                     };
+                    // TODO: here we should share the raw C pointer between
+                    //       CUDAContext::new_from_set_context and CUDAContext::new_from_gstreamer
                     match CUDAContext::new_from_gstreamer(&elem, -1, cuda_context) {
                         Ok(cuda_context) => {
                             let mut settings = self.settings.lock().unwrap();
