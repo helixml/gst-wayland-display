@@ -73,9 +73,11 @@ mod rendering;
 pub use self::focus::*;
 pub use self::input::*;
 pub use self::rendering::*;
+#[cfg(feature = "cuda")]
+use crate::utils::allocator::GsCUDABuf;
 use crate::utils::allocator::{
-    GsBuffer, GsBufferType, GsCUDABuf, GsDmaBuf, GsGlesbuffer, VideoInfoTypes,
-    gst_video_format_to_drm_fourcc, gst_video_format_to_drm_modifier, new_gbm_device,
+    GsBuffer, GsBufferType, GsDmaBuf, GsGlesbuffer, VideoInfoTypes, gst_video_format_to_drm_fourcc,
+    gst_video_format_to_drm_modifier, new_gbm_device,
 };
 use crate::utils::device::gpu::GPUDevice;
 use crate::utils::renderer::setup_renderer;
@@ -352,6 +354,7 @@ pub(crate) fn init(
                                     .expect("Failed to create GsDmaBuf");
                                 state.output_buffer = Some(GsBufferType::DMA(allocator));
                             }
+                            #[cfg(feature = "cuda")]
                             GstVideoInfo::CUDA(base_info) => {
                                 let egl_display = state
                                     .renderer
@@ -533,6 +536,7 @@ pub(crate) fn init(
                         None => render(state, Instant::now()),
                     };
                 }
+                #[cfg(feature = "cuda")]
                 Event::Msg(Command::UpdateCUDABufferPool(pool)) => {
                     tracing::info!("Updating CUDA buffer pool");
                     if let Some(GsBufferType::CUDA(ref mut cuda_buf)) = state.output_buffer {

@@ -240,6 +240,7 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
         }
     }
 
+    #[cfg(feature = "cuda")]
     fn to_gs_buffer(
         &self,
         target: &mut GlesTarget,
@@ -352,6 +353,116 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
                 &buffer.cuda_context,
                 &buffer.buffer_pool,
             )?),
+        }
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    fn to_gs_buffer(
+        &self,
+        target: &mut GlesTarget,
+        renderer: &mut GlesRenderer,
+    ) -> Result<GstBuffer, Box<dyn std::error::Error>> {
+        match self {
+            GsBufferType::RAW(buffer) => {
+                let mapping = renderer.copy_framebuffer(
+                    target,
+                    Rectangle::from_size(
+                        (
+                            buffer.video_info.width() as i32,
+                            buffer.video_info.height() as i32,
+                        )
+                            .into(),
+                    ),
+                    buffer.format,
+                )?;
+                let map = renderer.map_texture(&mapping)?;
+
+                let mut gst_buffer =
+                    gst::Buffer::with_size(map.len()).expect("failed to create buffer");
+                {
+                    let gst_buffer = gst_buffer.get_mut().unwrap();
+
+                    let mut vframe = gst_video::VideoFrameRef::from_buffer_ref_writable(
+                        gst_buffer,
+                        &buffer.video_info,
+                    )
+                    .unwrap();
+                    let plane_data = vframe.plane_data_mut(0).unwrap();
+                    plane_data.clone_from_slice(map);
+                }
+
+                Ok(gst_buffer)
+            }
+            GsBufferType::DMA(buffer) => {
+                let mut gst_buffer = GstBuffer::new();
+                {
+                    let video_format =
+                        match VideoFormat::from_fourcc(buffer.buffer.format().code as u32) {
+                            // TODO: this seems to always fail
+                            VideoFormat::Unknown => {
+                                tracing::debug!(
+                                    "Failed to convert fourcc to video format: {:?}",
+                                    buffer.buffer.format().code
+                                );
+                                VideoFormat::Bgrx // TODO: Use a more appropriate fallback, can't pass DmaDRM format
+                            }
+                            format => format,
+                        };
+
+                    // Calculate the required size based on GStreamer's expectations
+                    let required_size = gst_video::VideoInfo::builder(
+                        video_format,
+                        buffer.video_info.width(),
+                        buffer.video_info.height(),
+                    )
+                    .build()?
+                    .size();
+
+                    let gst_buffer = gst_buffer.get_mut().unwrap();
+                    buffer.buffer.handles().for_each(|handle| {
+                        let fd = handle.as_raw_fd();
+                        let actual_size = seek(&handle.as_fd(), SeekFrom::End(0)).unwrap() as usize;
+                        let _ = seek(&handle.as_fd(), SeekFrom::Start(0)); // Reset seek point
+
+                        // Use the larger of the two sizes to ensure we have enough space
+                        let allocation_size = required_size.max(actual_size);
+
+                        let memory = unsafe {
+                            buffer
+                                .gst_allocator
+                                .alloc_with_flags(fd, allocation_size, FdMemoryFlags::DONT_CLOSE)
+                                .expect("Failed to allocate memory")
+                        };
+                        gst_buffer.append_memory(memory);
+                    });
+
+                    let offsets = buffer
+                        .buffer
+                        .offsets()
+                        .map(|o| o as usize)
+                        .collect::<Vec<_>>();
+
+                    let strides = buffer
+                        .buffer
+                        .strides()
+                        .map(|s| s as i32)
+                        .collect::<Vec<_>>();
+
+                    let meta_result = VideoMeta::add_full(
+                        gst_buffer,
+                        gst_video::VideoFrameFlags::empty(),
+                        video_format,
+                        buffer.video_info.width(),
+                        buffer.video_info.height(),
+                        &offsets,
+                        &strides,
+                    );
+                    if let Err(error) = meta_result {
+                        tracing::warn!("Failed to add video meta: {:?}", error);
+                    }
+                }
+                Ok(gst_buffer)
+            }
         }
     }
 
