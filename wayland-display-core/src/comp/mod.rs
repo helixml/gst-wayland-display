@@ -485,13 +485,14 @@ pub(crate) fn init(
                                     if rendered_damage {
                                         output_presentation_feedback.presented(
                                             state.clock.now(),
-                                            Refresh::Fixed(Duration::from_millis(
-                                                output
-                                                    .current_mode()
-                                                    .map(|mode| mode.refresh)
-                                                    .unwrap_or_default()
-                                                    as u64,
-                                            )),
+                                            output
+                                                .current_mode()
+                                                .map(|mode| {
+                                                    Refresh::fixed(Duration::from_secs_f64(
+                                                        1_000f64 / mode.refresh as f64,
+                                                    ))
+                                                })
+                                                .unwrap_or(Refresh::Unknown),
                                             0,
                                             wp_presentation_feedback::Kind::Vsync,
                                         );
