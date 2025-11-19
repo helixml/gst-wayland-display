@@ -663,7 +663,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                         VideoInfoDmaDrm::new(base_video_info, format.code as u32, modifier);
                     GstVideoInfo::CUDA(CUDAParams {
                         video_info,
-                        cuda_context: settings.cuda_context.take().unwrap()
+                        cuda_context: settings.cuda_context.take().unwrap(),
                     })
                 } else {
                     GstVideoInfo::RAW(base_video_info)

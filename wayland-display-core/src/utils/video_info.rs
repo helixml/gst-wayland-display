@@ -6,7 +6,7 @@ use gst_video::{VideoInfo, VideoInfoDmaDrm};
 #[derive(Debug, Clone)]
 pub struct CUDAParams {
     pub video_info: VideoInfoDmaDrm,
-    pub cuda_context: cuda::CUDAContext
+    pub cuda_context: cuda::CUDAContext,
 }
 
 #[derive(Debug, Clone)]
