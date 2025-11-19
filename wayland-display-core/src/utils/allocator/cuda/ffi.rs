@@ -298,6 +298,7 @@ unsafe extern "C" {
     pub(crate) fn gst_cuda_stream_new(context: *mut GstCudaContext) -> GstCudaStreamHandle;
     pub(crate) fn gst_cuda_stream_ref(stream: GstCudaStreamHandle);
     pub(crate) fn gst_cuda_stream_unref(stream: GstCudaStreamHandle);
+    pub(crate) fn gst_clear_cuda_stream(stream: GstCudaStreamHandle);
 
     // GstCudaMemory functions
     fn gst_cuda_allocator_alloc(
@@ -370,6 +371,38 @@ pub(crate) fn gst_is_cuda_buffer_pool(obj: *mut gst::ffi::GstBufferPool) -> bool
     }
 }
 
+fn alloc_cuda_buffer(
+    cuda_context: &CUDAContext,
+    video_info: &VideoInfoDmaDrm,
+) -> Result<gst::Buffer, Box<dyn std::error::Error>> {
+    let mut gst_video_info = gst_dma_video_info_to_video_info(video_info)?;
+
+    // Use the stream from the context if available
+    let stream = cuda_context
+        .stream()
+        .as_ref()
+        .map(|s| s.stream)
+        .unwrap_or(unsafe { std::mem::zeroed() });
+
+    let gst_memory = unsafe {
+        gst_cuda_allocator_alloc(
+            ptr::null_mut(),
+            cuda_context.ptr,
+            stream,
+            &mut gst_video_info,
+        )
+    };
+    if gst_memory.is_null() {
+        return Err("Failed to allocate GST CUDA memory".into());
+    }
+
+    let mut buffer = gst::Buffer::new();
+    let buffer_ref = buffer.get_mut().unwrap();
+    buffer_ref.append_memory(unsafe { gst::Memory::from_glib_full(gst_memory) });
+
+    Ok(buffer)
+}
+
 pub(crate) fn acquire_or_alloc_buffer(
     buffer_pool: Option<GstBufferPool>,
     cuda_context: &CUDAContext,
@@ -387,7 +420,8 @@ pub(crate) fn acquire_or_alloc_buffer(
         };
 
         if result != gst_ffi::GST_FLOW_OK {
-            return Err(format!("Failed to acquire buffer from pool: {}", result).into());
+            tracing::info!("Failed to acquire buffer from pool: {:?}", result);
+            return alloc_cuda_buffer(cuda_context, video_info);
         }
 
         if gst_buffer.is_null() {
@@ -398,25 +432,7 @@ pub(crate) fn acquire_or_alloc_buffer(
     } else {
         // Fallback to direct allocation
         tracing::debug!("No buffer pool available, allocating directly");
-        let mut gst_video_info = gst_dma_video_info_to_video_info(video_info)?;
-        let stream = unsafe { std::mem::zeroed() };
-        let gst_memory = unsafe {
-            gst_cuda_allocator_alloc(
-                ptr::null_mut(),
-                cuda_context.ptr,
-                stream,
-                &mut gst_video_info,
-            )
-        };
-        if gst_memory.is_null() {
-            return Err("Failed to allocate GST CUDA memory".into());
-        }
-
-        let mut buffer = gst::Buffer::new();
-        let buffer_ref = buffer.get_mut().unwrap();
-        buffer_ref.append_memory(unsafe { gst::Memory::from_glib_full(gst_memory) });
-
-        Ok(buffer)
+        alloc_cuda_buffer(cuda_context, video_info)
     }
 }
 
@@ -429,7 +445,7 @@ pub(crate) fn copy_to_gst_buffer(
     let video_info = gst_dma_video_info_to_video_info(dma_video_info)?;
 
     let stream_handle = cuda_context
-        .stream
+        .stream()
         .as_ref()
         .map(|s| unsafe { gst_cuda_stream_get_handle(s.stream) })
         .unwrap_or(unsafe { std::mem::zeroed() });

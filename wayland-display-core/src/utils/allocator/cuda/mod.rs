@@ -366,8 +366,6 @@ impl CUDABufferPool {
 impl Drop for CUDABufferPool {
     fn drop(&mut self) {
         unsafe {
-            // TODO: if this is the last reference we should call:
-            //      ffi::gst_buffer_pool_set_active(self.pool, glib_ffi::GFALSE);
             gst::glib::gobject_ffi::g_object_unref(
                 self.pool as *mut gst::glib::gobject_ffi::GObject,
             );
@@ -432,7 +430,6 @@ impl CUDAContext {
             Err("Failed to create CUDA context".into())
         } else {
             let stream = unsafe { ffi::gst_cuda_stream_new(cuda_ctx) };
-            unsafe { gst::ffi::gst_object_ref(cuda_ctx as *mut gst::ffi::GstObject) };
             Ok(CUDAContext {
                 ptr: cuda_ctx,
                 stream: if stream.is_null() {
@@ -467,7 +464,6 @@ impl CUDAContext {
             Err("Failed to create CUDA context".into())
         } else {
             let stream = unsafe { ffi::gst_cuda_stream_new(cuda_ctx) };
-            unsafe { gst::ffi::gst_object_ref(cuda_ctx as *mut gst::ffi::GstObject) };
             Ok(CUDAContext {
                 ptr: cuda_ctx,
                 stream: if stream.is_null() {

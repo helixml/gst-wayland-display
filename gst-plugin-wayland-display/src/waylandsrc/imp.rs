@@ -56,8 +56,6 @@ pub struct Settings {
     disable_intel_workaround: bool,
     #[cfg(feature = "cuda")]
     cuda_context: Option<cuda::CUDAContext>,
-    #[cfg(feature = "cuda")]
-    cudabuffer_pool: Option<CUDABufferPool>,
 }
 
 pub struct State {
@@ -569,7 +567,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
             .features(0)
             .expect("Failed to get features")
             .contains(cuda::CAPS_FEATURE_MEMORY_CUDA_MEMORY);
-        let mut settings = self.settings.lock().unwrap();
+        let settings = self.settings.lock().unwrap();
         if settings.cuda_context.is_none() || !is_cuda {
             return self.parent_decide_allocation(query);
         }
@@ -608,7 +606,8 @@ impl BaseSrcImpl for WaylandDisplaySrc {
         match pool {
             Ok(pool) => {
                 let caps = unsafe { gst::Caps::from_glib_full(outcaps.unwrap().as_ptr()) };
-                pool.configure(&caps, cuda_ctx.stream().unwrap(), size, min, max)
+                let stream = cuda_ctx.stream().expect("failed to get CUDA stream");
+                pool.configure(&caps, &stream, size, min, max)
                     .expect("failed to configure CUDA pool");
 
                 let updated_size = pool.get_updated_size().expect("failed to get updated size");
@@ -625,8 +624,6 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                 let _ = self
                     .command_tx
                     .send(Command::UpdateCUDABufferPool(pool.clone()));
-
-                settings.cudabuffer_pool = Some(pool);
             }
             Err(err) => {
                 tracing::warn!("Failed to create CUDA buffer pool: {}", err);
@@ -647,7 +644,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                     .features(0)
                     .expect("Failed to get features")
                     .contains(cuda::CAPS_FEATURE_MEMORY_CUDA_MEMORY);
-                let settings = self.settings.lock().unwrap();
+                let mut settings = self.settings.lock().unwrap();
                 if is_cuda && settings.cuda_context.is_some() {
                     // memory:CUDAMemory will only get us a base format without modifiers,
                     // let's pick the first DRM format that matches the base format
@@ -666,8 +663,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                         VideoInfoDmaDrm::new(base_video_info, format.code as u32, modifier);
                     GstVideoInfo::CUDA(CUDAParams {
                         video_info,
-                        cuda_context: settings.cuda_context.clone().unwrap(),
-                        buffer_pool: settings.cudabuffer_pool.clone(),
+                        cuda_context: settings.cuda_context.take().unwrap()
                     })
                 } else {
                     GstVideoInfo::RAW(base_video_info)
