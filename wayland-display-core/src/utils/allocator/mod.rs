@@ -135,7 +135,7 @@ pub struct GsCUDABuf {
     buffer: Dmabuf,
     video_info: VideoInfoDmaDrm,
     cuda_context: CUDAContext,
-    // TODO: Set in compositor by UpdateCUDABufferPool, is this fine/ideal?
+    // Set in compositor by UpdateCUDABufferPool
     pub(crate) buffer_pool: Option<CUDABufferPool>,
     #[allow(dead_code)]
     egl_extensions: EglExtensions,

@@ -431,7 +431,7 @@ pub(crate) fn acquire_or_alloc_buffer(
         Ok(unsafe { gst::Buffer::from_glib_full(gst_buffer) })
     } else {
         // Fallback to direct allocation
-        tracing::debug!("No buffer pool available, allocating directly");
+        tracing::info!("No buffer pool available, allocating directly");
         alloc_cuda_buffer(cuda_context, video_info)
     }
 }

@@ -109,7 +109,7 @@ pub struct State {
 
     // management
     pub output: Option<Output>,
-    pub video_info: Option<GstVideoInfo>,
+    pub video_info: Option<VideoInfo>,
     pub seat: Seat<Self>,
     pub space: Space<Window>,
     pub popups: PopupManager,
@@ -342,8 +342,9 @@ pub(crate) fn init(
                     let position = (size.w as f64 / 2.0, size.h as f64 / 2.0).into();
                     state.pointer_location = position;
                     state.pointer_absolute_location = position;
+                    state.video_info = Some(video_info.clone().into());
                     match render_target {
-                        RenderTarget::Hardware(_) => match video_info.clone() {
+                        RenderTarget::Hardware(_) => match video_info {
                             GstVideoInfo::RAW(base_info) => {
                                 let allocator = GsGlesbuffer::new(&mut state.renderer, base_info)
                                     .expect("Failed to create GsGlesbuffer");
@@ -380,7 +381,6 @@ pub(crate) fn init(
                             state.output_buffer = Some(GsBufferType::RAW(allocator));
                         }
                     }
-                    state.video_info = Some(video_info);
 
                     let new_size = size
                         .to_f64()
@@ -417,8 +417,7 @@ pub(crate) fn init(
                 }
                 Event::Msg(Command::Buffer(buffer_sender, tracer)) => {
                     let wait = if let Some(last_render) = state.last_render {
-                        let base_info: VideoInfo =
-                            state.video_info.as_ref().unwrap().clone().into();
+                        let base_info = state.video_info.as_ref().unwrap().clone();
                         let framerate = base_info.fps();
                         let duration = Duration::from_secs_f64(
                             framerate.denom() as f64 / framerate.numer() as f64,

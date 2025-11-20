@@ -644,8 +644,11 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                     .features(0)
                     .expect("Failed to get features")
                     .contains(cuda::CAPS_FEATURE_MEMORY_CUDA_MEMORY);
-                let mut settings = self.settings.lock().unwrap();
-                if is_cuda && settings.cuda_context.is_some() {
+                let cuda_context = {
+                    let settings = self.settings.lock().unwrap();
+                    settings.cuda_context.clone()
+                };
+                if is_cuda && cuda_context.is_some() {
                     // memory:CUDAMemory will only get us a base format without modifiers,
                     // let's pick the first DRM format that matches the base format
                     let state = self.state.lock().unwrap();
@@ -663,7 +666,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
                         VideoInfoDmaDrm::new(base_video_info, format.code as u32, modifier);
                     GstVideoInfo::CUDA(CUDAParams {
                         video_info,
-                        cuda_context: settings.cuda_context.take().unwrap(),
+                        cuda_context: cuda_context.as_ref().unwrap().clone(),
                     })
                 } else {
                     GstVideoInfo::RAW(base_video_info)
@@ -776,7 +779,7 @@ impl BaseSrcImpl for WaylandDisplaySrc {
         let mut state = self.state.lock().unwrap();
         if let Some(state) = state.take() {
             let subscriber = Registry::default().with(GstLayer);
-            tracing::subscriber::with_default(subscriber, || std::mem::drop(state.display));
+            tracing::subscriber::with_default(subscriber, || drop(state.display));
         }
         Ok(())
     }
