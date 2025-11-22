@@ -1,5 +1,5 @@
-use ffi::CUgraphicsResource;
-use ffi::{GstCudaContext, PFN_eglDestroyImageKHR};
+pub use ffi::GstCudaContext;
+use ffi::{CUgraphicsResource, PFN_eglDestroyImageKHR};
 use gst::glib::ffi as glib_ffi;
 use gst::glib::translate::ToGlibPtr;
 use gst::query::Allocation;
@@ -179,18 +179,6 @@ impl Drop for CUDAContext {
     }
 }
 
-impl Clone for CUDAContext {
-    fn clone(&self) -> Self {
-        unsafe {
-            gst::ffi::gst_object_ref(self.ptr as *mut gst::ffi::GstObject);
-        }
-        CUDAContext {
-            ptr: self.ptr,
-            stream: self.stream.clone(),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct StreamHandle {
     stream: ffi::GstCudaStreamHandle,
@@ -200,17 +188,6 @@ impl Drop for StreamHandle {
     fn drop(&mut self) {
         unsafe {
             ffi::gst_cuda_stream_unref(self.stream);
-        }
-    }
-}
-
-impl Clone for StreamHandle {
-    fn clone(&self) -> Self {
-        unsafe {
-            ffi::gst_cuda_stream_ref(self.stream);
-        }
-        StreamHandle {
-            stream: self.stream,
         }
     }
 }
@@ -373,21 +350,8 @@ impl Drop for CUDABufferPool {
     }
 }
 
-impl Clone for CUDABufferPool {
-    fn clone(&self) -> Self {
-        unsafe {
-            gst::glib::gobject_ffi::g_object_ref(self.pool as *mut gst::glib::gobject_ffi::GObject);
-        }
-        CUDABufferPool { pool: self.pool }
-    }
-}
-
 unsafe impl Send for CUDAContext {}
-unsafe impl Sync for CUDAContext {}
 unsafe impl Send for CUDABufferPool {}
-unsafe impl Sync for CUDABufferPool {}
-unsafe impl Send for StreamHandle {}
-unsafe impl Sync for StreamHandle {}
 
 impl CUDAContext {
     pub fn new(device_id: c_int) -> Result<Self, String> {
@@ -412,26 +376,22 @@ impl CUDAContext {
     pub fn new_from_gstreamer(
         element: &Element,
         default_device_id: c_int,
-        cuda_context: Option<CUDAContext>,
+        cuda_raw_ptr: *mut *mut GstCudaContext,
     ) -> Result<Self, String> {
-        let mut cuda_ctx: *mut GstCudaContext = match cuda_context {
-            Some(c) => c.ptr,
-            None => unsafe { std::mem::zeroed() },
-        };
-
         let result = unsafe {
             ffi::gst_cuda_ensure_element_context(
                 element.to_glib_none().0,
                 default_device_id,
-                &mut cuda_ctx,
+                cuda_raw_ptr,
             )
         };
+
         if result == glib_ffi::GFALSE {
             Err("Failed to create CUDA context".into())
         } else {
-            let stream = unsafe { ffi::gst_cuda_stream_new(cuda_ctx) };
+            let stream = unsafe { ffi::gst_cuda_stream_new(*cuda_raw_ptr) };
             Ok(CUDAContext {
-                ptr: cuda_ctx,
+                ptr: unsafe { *cuda_raw_ptr },
                 stream: if stream.is_null() {
                     None
                 } else {
@@ -445,27 +405,23 @@ impl CUDAContext {
         element: &Element,
         context: &Context,
         default_device_id: c_int,
-        cuda_context: Option<CUDAContext>,
+        cuda_raw_ptr: *mut *mut GstCudaContext,
     ) -> Result<Self, String> {
-        let mut cuda_ctx: *mut GstCudaContext = match cuda_context {
-            Some(c) => c.ptr,
-            None => unsafe { std::mem::zeroed() },
-        };
-
         let result = unsafe {
             ffi::gst_cuda_handle_set_context(
                 element.to_glib_none().0,
                 context.to_glib_none().0,
                 default_device_id,
-                &mut cuda_ctx,
+                cuda_raw_ptr,
             )
         };
+
         if result == glib_ffi::GFALSE {
             Err("Failed to create CUDA context".into())
         } else {
-            let stream = unsafe { ffi::gst_cuda_stream_new(cuda_ctx) };
+            let stream = unsafe { ffi::gst_cuda_stream_new(*cuda_raw_ptr) };
             Ok(CUDAContext {
-                ptr: cuda_ctx,
+                ptr: unsafe { *cuda_raw_ptr },
                 stream: if stream.is_null() {
                     None
                 } else {
@@ -511,7 +467,7 @@ impl CUDAImage {
         &self,
         dma_video_info: VideoInfoDmaDrm,
         cuda_context: &CUDAContext,
-        buffer_pool: &Option<CUDABufferPool>,
+        buffer_pool: Option<&CUDABufferPool>,
     ) -> Result<GstBuffer, Box<dyn std::error::Error>> {
         let _cuda_context_guard = ffi::CudaContextGuard::new(cuda_context)?;
         let cuda_egl_fn = ffi::get_cuda_egl_functions()?;

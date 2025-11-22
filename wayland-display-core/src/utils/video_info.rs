@@ -1,12 +1,13 @@
 #[cfg(feature = "cuda")]
 use crate::utils::allocator::cuda;
 use gst_video::{VideoInfo, VideoInfoDmaDrm};
+use std::sync::{Arc, Mutex};
 
 #[cfg(feature = "cuda")]
 #[derive(Debug, Clone)]
 pub struct CUDAParams {
     pub video_info: VideoInfoDmaDrm,
-    pub cuda_context: cuda::CUDAContext,
+    pub cuda_context: Arc<Mutex<cuda::CUDAContext>>,
 }
 
 #[derive(Debug, Clone)]

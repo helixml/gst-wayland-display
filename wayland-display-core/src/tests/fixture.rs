@@ -1,4 +1,3 @@
-use crate::GstVideoInfo;
 use crate::comp::{ClientState, NixInterface, State};
 use crate::tests::client::WaylandClient;
 use crate::utils::RenderTarget;

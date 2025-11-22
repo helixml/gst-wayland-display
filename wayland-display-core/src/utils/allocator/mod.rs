@@ -22,7 +22,7 @@ use smithay::reexports::rustix::fs::{SeekFrom, seek};
 use smithay::utils::{DeviceFd, Rectangle};
 use std::fs::File;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct GsGlesbuffer {
@@ -134,9 +134,9 @@ impl GsDmaBuf {
 pub struct GsCUDABuf {
     buffer: Dmabuf,
     video_info: VideoInfoDmaDrm,
-    cuda_context: CUDAContext,
+    cuda_context: Arc<Mutex<CUDAContext>>,
     // Set in compositor by UpdateCUDABufferPool
-    pub(crate) buffer_pool: Option<CUDABufferPool>,
+    pub(crate) buffer_pool: Arc<Mutex<Option<CUDABufferPool>>>,
     #[allow(dead_code)]
     egl_extensions: EglExtensions,
     #[allow(dead_code)]
@@ -149,9 +149,9 @@ pub struct GsCUDABuf {
 impl GsCUDABuf {
     pub fn new(
         render_node: DrmNode,
-        cuda_context: CUDAContext,
+        cuda_context: Arc<Mutex<CUDAContext>>,
         video_info: VideoInfoDmaDrm,
-        buffer_pool: Option<CUDABufferPool>,
+        buffer_pool: Arc<Mutex<Option<CUDABufferPool>>>,
         egl_display: &EGLDisplay,
     ) -> Option<Self> {
         tracing::debug!("Creating CUDA buffer from {:?}", &video_info);
@@ -183,8 +183,11 @@ impl GsCUDABuf {
                     .expect("Failed to create EGLImage from DMA-BUF");
 
                 // Create CUDAImage once during initialization
-                let cuda_image = CUDAImage::from(&egl_image, &cuda_context)
-                    .expect("Failed to create CUDA image from EGLImage");
+                let cuda_image = {
+                    let ctx = cuda_context.lock().unwrap();
+                    CUDAImage::from(&egl_image, &ctx)
+                        .expect("Failed to create CUDA image from EGLImage")
+                };
 
                 Some(GsCUDABuf {
                     buffer,
@@ -348,11 +351,16 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
                 Ok(gst_buffer)
             }
             #[cfg(feature = "cuda")]
-            GsBufferType::CUDA(buffer) => Ok(buffer.cuda_image.to_gst_buffer(
-                buffer.video_info.clone(),
-                &buffer.cuda_context,
-                &buffer.buffer_pool,
-            )?),
+            GsBufferType::CUDA(buffer) => {
+                let cuda_ctx = buffer.cuda_context.lock().unwrap();
+                let buffer_pool = buffer.buffer_pool.lock().unwrap();
+
+                Ok(buffer.cuda_image.to_gst_buffer(
+                    buffer.video_info.clone(),
+                    &cuda_ctx,
+                    buffer_pool.as_ref(),
+                )?)
+            }
         }
     }
 
@@ -761,9 +769,9 @@ mod tests {
         let egl_display = renderer.egl_context().display().get_display_handle().handle;
         let raw_buffer = GsCUDABuf::new(
             render_node,
-            gst_cuda_ctx.clone(),
+            Arc::new(Mutex::new(gst_cuda_ctx)),
             drm_video_info.clone(),
-            Some(buffer_pool),
+            Arc::new(Mutex::new(Some(buffer_pool))),
             &egl_display,
         );
         assert!(raw_buffer.is_some());

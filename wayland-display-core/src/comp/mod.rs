@@ -58,6 +58,7 @@ use smithay::{
         viewporter::ViewporterState,
     },
 };
+use std::sync::Mutex;
 use std::{
     collections::HashSet,
     ffi::CString,
@@ -367,7 +368,7 @@ pub(crate) fn init(
                                     render_node.unwrap(),
                                     base_info.cuda_context,
                                     base_info.video_info,
-                                    None,
+                                    Arc::new(Mutex::new(None)),
                                     &egl_display,
                                 )
                                 .expect("Failed to create GsCUDABuf");
@@ -539,7 +540,7 @@ pub(crate) fn init(
                 Event::Msg(Command::UpdateCUDABufferPool(pool)) => {
                     tracing::info!("Updating CUDA buffer pool");
                     if let Some(GsBufferType::CUDA(ref mut cuda_buf)) = state.output_buffer {
-                        cuda_buf.buffer_pool = Some(pool);
+                        cuda_buf.buffer_pool = pool;
                     }
                 }
                 Event::Msg(Command::Quit) | Event::Closed => {

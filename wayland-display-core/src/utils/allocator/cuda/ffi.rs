@@ -16,7 +16,7 @@ use std::os::raw::{c_int, c_uint};
 use std::ptr;
 use std::sync::{Arc, OnceLock};
 
-pub(crate) type GstCudaContext = *mut c_void;
+pub type GstCudaContext = *mut c_void;
 
 #[macro_export]
 macro_rules! cuda_call {
