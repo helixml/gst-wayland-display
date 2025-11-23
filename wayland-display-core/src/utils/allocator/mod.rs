@@ -3,9 +3,7 @@ pub mod cuda;
 
 use crate::DrmModifier;
 #[cfg(feature = "cuda")]
-use crate::utils::allocator::cuda::{
-    CUDABufferPool, CUDAContext, CUDAImage, EGLImage, EglExtensions,
-};
+use crate::utils::allocator::cuda::{CUDABufferPool, CUDAContext, CUDAImage, EGLImage};
 use gst::Buffer as GstBuffer;
 use gst_video::{VideoFormat, VideoInfo, VideoInfoDmaDrm, VideoMeta};
 use gstreamer_allocators::{DmaBufAllocator, FdMemoryFlags};
@@ -134,15 +132,12 @@ impl GsDmaBuf {
 pub struct GsCUDABuf {
     buffer: Dmabuf,
     video_info: VideoInfoDmaDrm,
-    cuda_context: Arc<Mutex<CUDAContext>>,
     // Set in compositor by UpdateCUDABufferPool
     pub(crate) buffer_pool: Arc<Mutex<Option<CUDABufferPool>>>,
-    #[allow(dead_code)]
-    egl_extensions: EglExtensions,
-    #[allow(dead_code)]
-    egl_image: Arc<EGLImage>,
     // Cached for CUDA needs
-    cuda_image: Arc<CUDAImage>,
+    cuda_image: Arc<Mutex<CUDAImage>>,
+    // Order here matters, we want to keep the CUDAContext alive when dropping the CUDAImage
+    cuda_context: Arc<Mutex<CUDAContext>>,
 }
 
 #[cfg(feature = "cuda")]
@@ -176,27 +171,23 @@ impl GsCUDABuf {
 
         match result {
             Ok(buffer) => {
-                let egl_extensions = EglExtensions::new().expect("Failed to get EGL extensions");
-
                 // Create EGLImage once during initialization
-                let egl_image = EGLImage::from(&buffer, egl_display, &egl_extensions)
+                let egl_image = EGLImage::from(&buffer, egl_display)
                     .expect("Failed to create EGLImage from DMA-BUF");
 
                 // Create CUDAImage once during initialization
                 let cuda_image = {
                     let ctx = cuda_context.lock().unwrap();
-                    CUDAImage::from(&egl_image, &ctx)
+                    CUDAImage::from(egl_image, &ctx)
                         .expect("Failed to create CUDA image from EGLImage")
                 };
 
                 Some(GsCUDABuf {
                     buffer,
                     video_info,
-                    cuda_context,
                     buffer_pool,
-                    egl_extensions,
-                    egl_image: Arc::new(egl_image),
-                    cuda_image: Arc::new(cuda_image),
+                    cuda_image: Arc::new(Mutex::new(cuda_image)),
+                    cuda_context,
                 })
             }
             Err(_) => {
@@ -354,8 +345,9 @@ impl GsBuffer<GlesRenderer> for GsBufferType {
             GsBufferType::CUDA(buffer) => {
                 let cuda_ctx = buffer.cuda_context.lock().unwrap();
                 let buffer_pool = buffer.buffer_pool.lock().unwrap();
+                let cuda_image = buffer.cuda_image.lock().unwrap();
 
-                Ok(buffer.cuda_image.to_gst_buffer(
+                Ok(cuda_image.to_gst_buffer(
                     buffer.video_info.clone(),
                     &cuda_ctx,
                     buffer_pool.as_ref(),

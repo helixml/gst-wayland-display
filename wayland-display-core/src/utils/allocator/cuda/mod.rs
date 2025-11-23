@@ -47,16 +47,12 @@ impl EglExtensions {
 #[derive(Debug)]
 pub struct EGLImage {
     image: EGLImageKHR,
-    destroy_fn: PFN_eglDestroyImageKHR,
     egl_display: Arc<EGLDisplay>,
+    egl_extensions: EglExtensions,
 }
 
 impl EGLImage {
-    pub fn from(
-        dmabuf: &Dmabuf,
-        egl_display: &EGLDisplay,
-        egl_ext: &EglExtensions,
-    ) -> Result<Self, String> {
+    pub fn from(dmabuf: &Dmabuf, egl_display: &EGLDisplay) -> Result<Self, String> {
         // Get dmabuf properties
         let width = dmabuf.width();
         let height = dmabuf.height();
@@ -115,9 +111,10 @@ impl EGLImage {
         }
 
         attribs.push(ffi::EGL_NONE);
+        let egl_extensions = EglExtensions::new().ok_or("Failed to load EGL extensions")?;
 
         let egl_image = unsafe {
-            (egl_ext.create_image)(
+            (egl_extensions.create_image)(
                 *egl_display,
                 ptr::null_mut(),
                 ffi::EGL_LINUX_DMA_BUF_EXT,
@@ -129,7 +126,7 @@ impl EGLImage {
             Ok(EGLImage {
                 image: egl_image,
                 egl_display: Arc::new(egl_display.clone()),
-                destroy_fn: egl_ext.destroy_image,
+                egl_extensions,
             })
         } else {
             Err("Failed to create EGLImage".into())
@@ -140,7 +137,7 @@ impl EGLImage {
 impl Drop for EGLImage {
     fn drop(&mut self) {
         unsafe {
-            (self.destroy_fn)(*self.egl_display, self.image);
+            (self.egl_extensions.destroy_image)(*self.egl_display, self.image);
         }
     }
 }
@@ -442,11 +439,13 @@ impl CUDAContext {
 
 #[derive(Debug)]
 pub struct CUDAImage {
+    #[allow(dead_code)]
+    egl_image: EGLImage,
     cuda_graphic_resource: CUgraphicsResource,
 }
 
 impl CUDAImage {
-    pub fn from(egl_image: &EGLImage, cuda_context: &CUDAContext) -> Result<Self, String> {
+    pub fn from(egl_image: EGLImage, cuda_context: &CUDAContext) -> Result<Self, String> {
         let _cuda_context_guard = ffi::CudaContextGuard::new(cuda_context)?;
         let cuda_egl_fn = ffi::get_cuda_egl_functions()?;
         // Let's import the EGLImage into CUDA
@@ -459,6 +458,7 @@ impl CUDAImage {
             )?;
         }
         Ok(CUDAImage {
+            egl_image,
             cuda_graphic_resource: cuda_resource,
         })
     }
