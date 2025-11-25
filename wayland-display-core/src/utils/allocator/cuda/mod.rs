@@ -4,7 +4,7 @@ use gst::glib::ffi as glib_ffi;
 use gst::glib::translate::ToGlibPtr;
 use gst::query::Allocation;
 use gst::{Buffer as GstBuffer, Context, Element, QueryRef};
-use gst_video::{VideoFormat, VideoInfoDmaDrm, VideoMeta};
+use gst_video::{VideoInfoDmaDrm, VideoMeta};
 use smithay::backend::allocator::Buffer;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::egl;
@@ -483,28 +483,17 @@ impl CUDAImage {
         )?;
 
         // Copy data to the buffer
-        ffi::copy_to_gst_buffer(egl_frame, &mut buffer, cuda_context, &dma_video_info)?;
-
-        // Add video meta
-        let video_format = match VideoFormat::from_fourcc(dma_video_info.fourcc()) {
-            VideoFormat::Unknown => {
-                tracing::debug!(
-                    "Failed to convert fourcc to video format: {:?}",
-                    dma_video_info.fourcc()
-                );
-                VideoFormat::Bgrx // Fallback
-            }
-            format => format,
-        };
+        let video_info = ffi::copy_to_gst_buffer(egl_frame, &mut buffer, cuda_context)?;
 
         let buffer_ref = buffer.get_mut().unwrap();
-        VideoMeta::add(
+        VideoMeta::add_full(
             buffer_ref,
             gst_video::VideoFrameFlags::empty(),
-            video_format,
-            dma_video_info.width(),
-            dma_video_info.height(),
-            // TODO: Add stride and offset metadata here
+            video_info.format(),
+            video_info.width(),
+            video_info.height(),
+            video_info.offset(),
+            video_info.stride(),
         )?;
 
         Ok(buffer)

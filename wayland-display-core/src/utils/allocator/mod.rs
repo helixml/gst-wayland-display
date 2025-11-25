@@ -541,7 +541,19 @@ mod tests {
     use smithay::backend::renderer::Frame;
     use smithay::utils::Transform;
 
-    // Adapted from: https://github.com/games-on-whales/smithay/blob/master/examples/buffer_test.rs#L277
+    /// Adapted from: https://github.com/games-on-whales/smithay/blob/master/examples/buffer_test.rs#L277
+    /// Produces a 2x2 grid of colored rectangles:
+    /// ```
+    /// ┌─────────┬─────────┐
+    /// │   RED   │  GREEN  │
+    /// │ (top-   │ (top-   │
+    /// │  left)  │  right) │
+    /// ├─────────┼─────────┤
+    /// │  BLUE   │ YELLOW  │
+    /// │ (bottom-│ (bottom-│
+    /// │  left)  │  right) │
+    /// └─────────┴─────────┘
+    /// ```
     fn render_into<R, T>(renderer: &mut R, buffer: &mut T, w: i32, h: i32)
     where
         R: Renderer + Bind<T>,
@@ -553,25 +565,25 @@ mod tests {
             .expect("Failed to create render frame");
         frame
             .clear(
-                [1.0, 0.0, 0.0, 1.0].into(),
+                [1.0, 0.0, 0.0, 1.0].into(), // RED
                 &[Rectangle::from_size((w / 2, h / 2).into())],
             )
             .expect("Render error");
         frame
             .clear(
-                [0.0, 1.0, 0.0, 1.0].into(),
+                [0.0, 1.0, 0.0, 1.0].into(), // GREEN
                 &[Rectangle::new((w / 2, 0).into(), (w / 2, h / 2).into())],
             )
             .expect("Render error");
         frame
             .clear(
-                [0.0, 0.0, 1.0, 1.0].into(),
+                [0.0, 0.0, 1.0, 1.0].into(), // BLUE
                 &[Rectangle::new((0, h / 2).into(), (w / 2, h / 2).into())],
             )
             .expect("Render error");
         frame
             .clear(
-                [1.0, 1.0, 0.0, 1.0].into(),
+                [1.0, 1.0, 0.0, 1.0].into(), // YELLOW
                 &[Rectangle::new((w / 2, h / 2).into(), (w / 2, h / 2).into())],
             )
             .expect("Render error");
@@ -639,12 +651,14 @@ mod tests {
         let render_node =
             DrmNode::from_path("/dev/dri/renderD128").expect("Failed to create render node");
         let mut renderer = setup_renderer(Some(render_node));
+        let w = 10;
+        let h = 10;
         let caps = gst_video::VideoCapsBuilder::new()
             .features([gstreamer_allocators::CAPS_FEATURE_MEMORY_DMABUF])
             .format(gst_video::VideoFormat::DmaDrm)
             .field("drm-format", "RGBA")
-            .height(10)
-            .width(10)
+            .height(h)
+            .width(w)
             .pixel_aspect_ratio(1.into())
             .framerate(gst::Fraction::new(30, 1))
             .build();
@@ -670,7 +684,7 @@ mod tests {
         let bind_result = buffer.bind(&mut renderer);
         assert!(bind_result.is_ok());
 
-        render_into(&mut renderer, &mut raw_buffer.unwrap().buffer, 10, 10);
+        render_into(&mut renderer, &mut raw_buffer.clone().unwrap().buffer, w, h);
         let gst_buffer = buffer_clone
             .to_gs_buffer(&mut bind_result.unwrap(), &mut renderer)
             .expect("Failed to convert buffer");
@@ -684,21 +698,41 @@ mod tests {
         let plane_data = read_buf.as_slice();
 
         assert_eq!(plane_data.len(), gst_buffer_size);
-        assert_eq!(
-            plane_data[0..10 * 4],
-            [
-                // R, G, B, A
-                255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 0,
-                255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255
-            ]
-        );
+        let regions = [
+            // Color format here is RGBA
+            ((0, 0), [255, 0, 0]),           // Red
+            ((w / 2, 0), [0, 255, 0]),       // Green
+            ((0, h / 2), [0, 0, 255]),       // Blue
+            ((w / 2, h / 2), [255, 255, 0]), // Yellow
+        ];
+
+        let stride = raw_buffer
+            .unwrap()
+            .buffer
+            .strides()
+            .next()
+            .expect("Failed to get stride");
+        for ((x_start, y_start), expected_color) in regions {
+            let pixel = get_pixel(
+                plane_data,
+                x_start as usize,
+                y_start as usize,
+                stride as usize,
+            );
+            assert_eq!(pixel, expected_color, "Pixel at ({}, {})", x_start, y_start);
+        }
 
         let buf_meta = gst_buffer
             .meta::<VideoMeta>()
             .expect("Failed to get buffer meta");
-        assert_eq!(buf_meta.width(), 10);
-        assert_eq!(buf_meta.height(), 10);
+        assert_eq!(buf_meta.width(), w as u32);
+        assert_eq!(buf_meta.height(), h as u32);
         assert_eq!(buf_meta.n_planes(), 1);
+    }
+
+    fn get_pixel(buffer: &[u8], x: usize, y: usize, stride: usize) -> [u8; 3] {
+        let offset = y * stride + x * 4;
+        [buffer[offset], buffer[offset + 1], buffer[offset + 2]]
     }
 
     #[cfg(feature = "cuda")]
@@ -706,6 +740,8 @@ mod tests {
     fn test_cuda_buffer() {
         test_init();
         cuda::init_cuda().expect("Failed to initialize CUDA");
+        let w = 100;
+        let h = 100;
 
         let render_node =
             DrmNode::from_path("/dev/dri/renderD129").expect("Failed to create render node");
@@ -713,9 +749,9 @@ mod tests {
         let caps = gst_video::VideoCapsBuilder::new()
             .features([gstreamer_allocators::CAPS_FEATURE_MEMORY_DMABUF])
             .format(gst_video::VideoFormat::DmaDrm)
-            .field("drm-format", "AB24:0x0300000000606010")
-            .height(10)
-            .width(10)
+            .field("drm-format", "AR24:0x300000000606010")
+            .height(h)
+            .width(w)
             .pixel_aspect_ratio(1.into())
             .framerate(gst::Fraction::new(30, 1))
             .build();
@@ -725,11 +761,11 @@ mod tests {
 
         assert_eq!(
             gst_video_format_to_drm_fourcc(&drm_video_info),
-            Some(DrmFourcc::Abgr8888)
+            Some(DrmFourcc::Argb8888)
         );
         assert_eq!(
             gst_video_format_to_drm_modifier(&drm_video_info),
-            Some(Modifier::Unrecognized(0x0300000000606010))
+            Some(Modifier::Unrecognized(0x300000000606010))
         );
 
         let gst_cuda_ctx = CUDAContext::new(0).expect("Failed to create CUDA context");
@@ -737,8 +773,8 @@ mod tests {
         let cuda_caps = gst_video::VideoCapsBuilder::new()
             .features([cuda::CAPS_FEATURE_MEMORY_CUDA_MEMORY])
             .format(VideoFormat::Abgr)
-            .height(10)
-            .width(10)
+            .height(h)
+            .width(w)
             .pixel_aspect_ratio(1.into())
             .framerate(gst::Fraction::new(30, 1))
             .build();
@@ -774,7 +810,7 @@ mod tests {
         let bind_result = buffer.bind(&mut renderer);
         assert!(bind_result.is_ok());
 
-        render_into(&mut renderer, &mut raw_buffer.unwrap().buffer, 10, 10);
+        render_into(&mut renderer, &mut raw_buffer.clone().unwrap().buffer, w, h);
         let gst_buffer = buffer_clone
             .to_gs_buffer(&mut bind_result.unwrap(), &mut renderer)
             .expect("Failed to convert buffer");
@@ -789,19 +825,33 @@ mod tests {
         let plane_data = read_buf.as_slice();
 
         assert_eq!(plane_data.len(), gst_buffer_size);
-        assert_eq!(
-            plane_data[0..10 * 4],
-            [
-                255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 0,
-                255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255
-            ]
-        );
+        let regions = [
+            // Color format here is BGRA
+            ((0, 0), [0, 0, 255]),           // Red
+            ((w / 2, 0), [0, 255, 0]),       // Green
+            ((0, h / 2), [255, 0, 0]),       // Blue
+            ((w / 2, h / 2), [0, 255, 255]), // Yellow
+        ];
+
+        let stride = gst_buffer
+            .meta::<VideoMeta>()
+            .expect("Failed to get buffer meta")
+            .stride()[0];
+        for ((x_start, y_start), expected_color) in regions {
+            let pixel = get_pixel(
+                plane_data,
+                x_start as usize,
+                y_start as usize,
+                stride as usize,
+            );
+            assert_eq!(pixel, expected_color, "Pixel at ({}, {})", x_start, y_start);
+        }
 
         let buf_meta = gst_buffer
             .meta::<VideoMeta>()
             .expect("Failed to get buffer meta");
-        assert_eq!(buf_meta.width(), 10);
-        assert_eq!(buf_meta.height(), 10);
+        assert_eq!(buf_meta.width(), w as u32);
+        assert_eq!(buf_meta.height(), h as u32);
         assert_eq!(buf_meta.n_planes(), 1);
     }
 
