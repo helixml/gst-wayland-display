@@ -15,9 +15,9 @@ pub enum RenderTarget {
 impl FromStr for RenderTarget {
     type Err = CreateDrmNodeError;
     fn from_str(s: &str) -> Result<Self, CreateDrmNodeError> {
-        Ok(match s {
+        Ok(match s.to_ascii_lowercase().as_str() {
             "software" => RenderTarget::Software,
-            path => RenderTarget::Hardware(DrmNode::from_path(path)?),
+            _ => RenderTarget::Hardware(DrmNode::from_path(s)?),
         })
     }
 }
