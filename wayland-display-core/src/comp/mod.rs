@@ -8,6 +8,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::reexports::gbm::BufferObjectFlags;
 use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
 use smithay::wayland::presentation::Refresh;
+use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
 use smithay::{
     backend::{
         allocator::{Fourcc, dmabuf::Dmabuf},
@@ -137,6 +138,7 @@ pub struct State {
     pub shm_state: ShmState,
     viewporter_state: ViewporterState,
     cursor_event_count: i32,
+    pub single_pixel_buffer_state: SinglePixelBufferState,
 }
 
 impl State {
@@ -159,6 +161,7 @@ impl State {
         let mut seat_state = SeatState::new();
         let shell_state = XdgShellState::new::<State>(&dh);
         let viewporter_state = ViewporterState::new::<State>(&dh);
+        let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&dh);
 
         let render_node: Option<DrmNode> = render_target.clone().into();
 
@@ -253,6 +256,7 @@ impl State {
             shell_state,
             shm_state,
             viewporter_state,
+            single_pixel_buffer_state,
         }
     }
 }
@@ -481,13 +485,14 @@ pub(crate) fn init(
                                     if rendered_damage {
                                         output_presentation_feedback.presented(
                                             state.clock.now(),
-                                            Refresh::Fixed(Duration::from_millis(
-                                                output
-                                                    .current_mode()
-                                                    .map(|mode| mode.refresh)
-                                                    .unwrap_or_default()
-                                                    as u64,
-                                            )),
+                                            output
+                                                .current_mode()
+                                                .map(|mode| {
+                                                    Refresh::fixed(Duration::from_secs_f64(
+                                                        1_000f64 / mode.refresh as f64,
+                                                    ))
+                                                })
+                                                .unwrap_or(Refresh::Unknown),
                                             0,
                                             wp_presentation_feedback::Kind::Vsync,
                                         );
