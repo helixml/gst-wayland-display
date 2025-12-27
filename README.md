@@ -3,6 +3,17 @@
 A micro Wayland compositor that can be used as a Gstreamer plugin. Based
 on [smithay](https://github.com/Smithay/smithay)
 
+```mermaid 
+flowchart LR
+    WaylandComp["GST<br/>Wayland<br/>Comp"]
+    AppLayer["App, Game,<br/>Desktop, ..."]
+    Pipeline["GStreamer<br/>Pipeline"]
+    
+    WaylandComp -->|Wayland Socket| AppLayer
+    WaylandComp -->|Raw<br/>Framebuffer| Pipeline
+    Pipeline -->|Mouse, Keyboard<br/>Events| WaylandComp
+```
+
 ## Install
 
 see [cargo-c](https://github.com/lu-zero/cargo-c)
@@ -68,6 +79,10 @@ gst-launch-1.0 waylanddisplaysrc  ! 'video/x-raw(memory:DMABuf),width=1920,heigh
 
 ### Support for Nvidia CUDAMemory
 
+> [!IMPORTANT]
+> This is gated behind the `cuda` feature flag. To enable it, you'll need to install `gst-cuda-1.0` and have access to
+> `libcuda.so` at runtime.
+
 This plugin supports outputting **CUDA buffers** for low-latency Nvidia pipelines. By not using `glupload` and
 `glcolorconvert` we can not only be way more efficient, but it'll also allow us to re-use the GL context that we already
 have in Smithay.
@@ -86,7 +101,30 @@ In order to support this we leverage `gst-cuda-1.0` which adds a single build de
 At runtime, you'll need to have access to `libcuda.so` but only to access and use `CUDAMemory`; you can still use
 `DMABuf` when running this plugin on a platform that doesn't support it.
 
-It's also possible to completely remove this functionality by disabling the Cargo `cuda` feature.
+## Run without a GPU
+
+If you don't have a GPU, you can still run this plugin without it; just use the option `render_node=software` to enable it. Example pipeline:
+```bash 
+gst-launch-1.0 waylanddisplaysrc render_node=software ! 'video/x-raw,width=1280,height=720,format=RGBx,framerate=60/1' !  videoconvert ! autovideosink
+```
+
+## Mouse and Keyboard
+
+To pass mouse and keyboard events to the Wayland compositor you have two options: 
+ - Pass two valid input devices to the plugin using the `keyboard` or `mouse` options (ex: `waylanddisplaysrc keyboard=/dev/input/event20 mouse=/dev/input/event21`)
+ - Send the inputs as raw events to the Gstreamer pipeline
+
+For example, here's [how Wolf sends the mouse movements](https://github.com/games-on-whales/wolf/blob/b4c4571b061cd243a4606bd16969c235767d6ec2/src/core/src/platforms/linux/virtual-display/gst-wayland-display.cpp#L45-L53) to gst-wayland-comp:
+```c++
+  auto msg = gst_structure_new("MouseMoveRelative",
+                                "pointer_x", G_TYPE_DOUBLE, static_cast<double>(delta_x),
+                                "pointer_y", G_TYPE_DOUBLE, static_cast<double>(delta_y),
+                                NULL);
+  gstreamer::send_message(w_state->wayland_plugin.get(), msg);
+```
+
+Mouse, Keyboard and Touch events are supported by the plugin. 
+
 
 ## C Bindings
 

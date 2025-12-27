@@ -8,6 +8,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::reexports::gbm::BufferObjectFlags;
 use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
 use smithay::wayland::presentation::Refresh;
+use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
 use smithay::{
     backend::{
         allocator::{Fourcc, dmabuf::Dmabuf},
@@ -58,6 +59,7 @@ use smithay::{
         viewporter::ViewporterState,
     },
 };
+use std::sync::Mutex;
 use std::{
     collections::HashSet,
     ffi::CString,
@@ -73,9 +75,11 @@ mod rendering;
 pub use self::focus::*;
 pub use self::input::*;
 pub use self::rendering::*;
+#[cfg(feature = "cuda")]
+use crate::utils::allocator::GsCUDABuf;
 use crate::utils::allocator::{
-    GsBuffer, GsBufferType, GsCUDABuf, GsDmaBuf, GsGlesbuffer, VideoInfoTypes,
-    gst_video_format_to_drm_fourcc, gst_video_format_to_drm_modifier, new_gbm_device,
+    GsBuffer, GsBufferType, GsDmaBuf, GsGlesbuffer, VideoInfoTypes, gst_video_format_to_drm_fourcc,
+    gst_video_format_to_drm_modifier, new_gbm_device,
 };
 use crate::utils::device::gpu::GPUDevice;
 use crate::utils::renderer::setup_renderer;
@@ -107,7 +111,7 @@ pub struct State {
 
     // management
     pub output: Option<Output>,
-    pub video_info: Option<GstVideoInfo>,
+    pub video_info: Option<VideoInfo>,
     pub seat: Seat<Self>,
     pub space: Space<Window>,
     pub popups: PopupManager,
@@ -134,6 +138,7 @@ pub struct State {
     pub shm_state: ShmState,
     viewporter_state: ViewporterState,
     cursor_event_count: i32,
+    pub single_pixel_buffer_state: SinglePixelBufferState,
 }
 
 impl State {
@@ -156,6 +161,7 @@ impl State {
         let mut seat_state = SeatState::new();
         let shell_state = XdgShellState::new::<State>(&dh);
         let viewporter_state = ViewporterState::new::<State>(&dh);
+        let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&dh);
 
         let render_node: Option<DrmNode> = render_target.clone().into();
 
@@ -250,6 +256,7 @@ impl State {
             shell_state,
             shm_state,
             viewporter_state,
+            single_pixel_buffer_state,
         }
     }
 }
@@ -340,8 +347,9 @@ pub(crate) fn init(
                     let position = (size.w as f64 / 2.0, size.h as f64 / 2.0).into();
                     state.pointer_location = position;
                     state.pointer_absolute_location = position;
+                    state.video_info = Some(video_info.clone().into());
                     match render_target {
-                        RenderTarget::Hardware(_) => match video_info.clone() {
+                        RenderTarget::Hardware(_) => match video_info {
                             GstVideoInfo::RAW(base_info) => {
                                 let allocator = GsGlesbuffer::new(&mut state.renderer, base_info)
                                     .expect("Failed to create GsGlesbuffer");
@@ -352,6 +360,7 @@ pub(crate) fn init(
                                     .expect("Failed to create GsDmaBuf");
                                 state.output_buffer = Some(GsBufferType::DMA(allocator));
                             }
+                            #[cfg(feature = "cuda")]
                             GstVideoInfo::CUDA(base_info) => {
                                 let egl_display = state
                                     .renderer
@@ -363,7 +372,7 @@ pub(crate) fn init(
                                     render_node.unwrap(),
                                     base_info.cuda_context,
                                     base_info.video_info,
-                                    base_info.buffer_pool,
+                                    Arc::new(Mutex::new(None)),
                                     &egl_display,
                                 )
                                 .expect("Failed to create GsCUDABuf");
@@ -377,7 +386,6 @@ pub(crate) fn init(
                             state.output_buffer = Some(GsBufferType::RAW(allocator));
                         }
                     }
-                    state.video_info = Some(video_info);
 
                     let new_size = size
                         .to_f64()
@@ -414,8 +422,7 @@ pub(crate) fn init(
                 }
                 Event::Msg(Command::Buffer(buffer_sender, tracer)) => {
                     let wait = if let Some(last_render) = state.last_render {
-                        let base_info: VideoInfo =
-                            state.video_info.as_ref().unwrap().clone().into();
+                        let base_info = state.video_info.as_ref().unwrap().clone();
                         let framerate = base_info.fps();
                         let duration = Duration::from_secs_f64(
                             framerate.denom() as f64 / framerate.numer() as f64,
@@ -478,13 +485,14 @@ pub(crate) fn init(
                                     if rendered_damage {
                                         output_presentation_feedback.presented(
                                             state.clock.now(),
-                                            Refresh::Fixed(Duration::from_millis(
-                                                output
-                                                    .current_mode()
-                                                    .map(|mode| mode.refresh)
-                                                    .unwrap_or_default()
-                                                    as u64,
-                                            )),
+                                            output
+                                                .current_mode()
+                                                .map(|mode| {
+                                                    Refresh::fixed(Duration::from_secs_f64(
+                                                        1_000f64 / mode.refresh as f64,
+                                                    ))
+                                                })
+                                                .unwrap_or(Refresh::Unknown),
                                             0,
                                             wp_presentation_feedback::Kind::Vsync,
                                         );
@@ -533,10 +541,11 @@ pub(crate) fn init(
                         None => render(state, Instant::now()),
                     };
                 }
+                #[cfg(feature = "cuda")]
                 Event::Msg(Command::UpdateCUDABufferPool(pool)) => {
                     tracing::info!("Updating CUDA buffer pool");
                     if let Some(GsBufferType::CUDA(ref mut cuda_buf)) = state.output_buffer {
-                        cuda_buf.buffer_pool = Some(pool);
+                        cuda_buf.buffer_pool = pool;
                     }
                 }
                 Event::Msg(Command::Quit) | Event::Closed => {
